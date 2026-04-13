@@ -1,10 +1,13 @@
 package org.example.view;
 
+import org.example.controller.ImageController;
+import org.opencv.core.Mat;
+
 import javax.swing.*;
+import javax.swing.filechooser.FileNameExtensionFilter;
 import java.awt.*;
 import java.awt.event.ActionEvent;
 import java.awt.event.KeyEvent;
-import org.example.controller.ImageController;
 
 public class MainView extends JFrame {
     private ImagePanel imagePanel;
@@ -12,7 +15,6 @@ public class MainView extends JFrame {
     private JMenuBar menuBar;
     private JPanel buttonPanel;
 
-    // Кнопки и пункты меню (для доступа из контроллера)
     private JMenuItem openMenuItem;
     private JMenuItem undoMenuItem;
     private JMenuItem redoMenuItem;
@@ -27,7 +29,7 @@ public class MainView extends JFrame {
     private JButton redoButton;
 
     public MainView() {
-        setTitle("OpenCV + Swing Приложение");
+        setTitle("OpenCV + Swing приложение");
         setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
         setSize(800, 600);
         setLocationRelativeTo(null);
@@ -48,7 +50,6 @@ public class MainView extends JFrame {
     private void createMenuBar() {
         menuBar = new JMenuBar();
 
-        // Меню "Файл"
         JMenu fileMenu = new JMenu("Файл");
         openMenuItem = new JMenuItem("Открыть изображение...");
         openMenuItem.setAccelerator(KeyStroke.getKeyStroke(KeyEvent.VK_O, KeyEvent.CTRL_DOWN_MASK));
@@ -60,7 +61,6 @@ public class MainView extends JFrame {
         fileMenu.addSeparator();
         fileMenu.add(exitItem);
 
-        // Меню "Правка"
         JMenu editMenu = new JMenu("Правка");
         undoMenuItem = new JMenuItem("Отменить");
         undoMenuItem.setAccelerator(KeyStroke.getKeyStroke(KeyEvent.VK_Z, KeyEvent.CTRL_DOWN_MASK));
@@ -71,7 +71,6 @@ public class MainView extends JFrame {
         editMenu.add(undoMenuItem);
         editMenu.add(redoMenuItem);
 
-        // Меню "Обработка"
         JMenu processMenu = new JMenu("Обработка");
         grayMenuItem = new JMenuItem("Сделать черно-белым");
         grayMenuItem.setAccelerator(KeyStroke.getKeyStroke(KeyEvent.VK_G, KeyEvent.CTRL_DOWN_MASK));
@@ -116,9 +115,7 @@ public class MainView extends JFrame {
         add(statusLabel, BorderLayout.SOUTH);
     }
 
-    // Методы для контроллера
     public void setController(ImageController controller) {
-        // Меню
         openMenuItem.addActionListener(controller::onOpenImage);
         undoMenuItem.addActionListener(controller::onUndo);
         redoMenuItem.addActionListener(controller::onRedo);
@@ -126,19 +123,16 @@ public class MainView extends JFrame {
         blurMenuItem.addActionListener(controller::onBlurFilter);
         resetMenuItem.addActionListener(controller::onReset);
 
-        // Кнопки
         openButton.addActionListener(controller::onOpenImage);
         grayButton.addActionListener(controller::onGrayFilter);
         blurButton.addActionListener(controller::onBlurFilter);
         undoButton.addActionListener(controller::onUndo);
         redoButton.addActionListener(controller::onRedo);
 
-        // Горячие клавиши на уровне окна
         setupKeyBindings(controller);
     }
 
     private void setupKeyBindings(ImageController controller) {
-        // Ctrl+Z
         getRootPane().getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW)
                 .put(KeyStroke.getKeyStroke(KeyEvent.VK_Z, KeyEvent.CTRL_DOWN_MASK), "undo");
         getRootPane().getActionMap().put("undo", new AbstractAction() {
@@ -148,7 +142,6 @@ public class MainView extends JFrame {
             }
         });
 
-        // Ctrl+Y
         getRootPane().getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW)
                 .put(KeyStroke.getKeyStroke(KeyEvent.VK_Y, KeyEvent.CTRL_DOWN_MASK), "redo");
         getRootPane().getActionMap().put("redo", new AbstractAction() {
@@ -163,14 +156,15 @@ public class MainView extends JFrame {
         statusLabel.setText(message);
     }
 
-    public void displayImage(org.opencv.core.Mat image) {
+    public void displayImage(Mat image) {
         imagePanel.setImage(image);
     }
 
     public String showOpenFileDialog() {
         JFileChooser fileChooser = new JFileChooser();
-        fileChooser.setFileFilter(new javax.swing.filechooser.FileNameExtensionFilter(
-                "Изображения", "jpg", "jpeg", "png", "bmp"));
+        fileChooser.setAcceptAllFileFilterUsed(true);
+        fileChooser.addChoosableFileFilter(new FileNameExtensionFilter(
+                "Изображения и DICOM", "jpg", "jpeg", "png", "bmp", "dcm"));
 
         if (fileChooser.showOpenDialog(this) == JFileChooser.APPROVE_OPTION) {
             return fileChooser.getSelectedFile().getAbsolutePath();

@@ -1,12 +1,11 @@
 package org.example.utils;
 
+import nu.pattern.OpenCV;
+
 public class OpenCVLoader {
     public static boolean loadOpenCV() {
         try {
-            // ⚠️ КАЖДЫЙ СТУДЕНТ ДОЛЖЕН ИСПРАВИТЬ ПУТЬ ПОД СЕБЯ!
-            String dllPath = "D:\\opencv\\build\\java\\x64\\opencv_java4120.dll";
-
-            System.load(dllPath);
+            OpenCV.loadLocally();
             System.out.println("✅ OpenCV загружен");
             return true;
 

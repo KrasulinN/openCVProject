@@ -1,16 +1,19 @@
 package org.example.controller;
 
-import org.example.model.ImageModel;
 import org.example.model.FilterType;
+import org.example.model.ImageModel;
+import org.example.utils.DicomImageLoader;
 import org.example.view.MainView;
 import org.opencv.core.Mat;
 import org.opencv.imgcodecs.Imgcodecs;
 
 import java.awt.event.ActionEvent;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 
 public class ImageController {
-    private ImageModel model;
-    private MainView view;
+    private final ImageModel model;
+    private final MainView view;
 
     public ImageController(ImageModel model, MainView view) {
         this.model = model;
@@ -19,18 +22,31 @@ public class ImageController {
     }
 
     public void onOpenImage(ActionEvent e) {
-        String path = view.showOpenFileDialog();
-        if (path == null) return;
-
-        Mat image = Imgcodecs.imread(path);
-
-        if (!image.empty()) {
-            model.loadImage(image);
-            view.displayImage(model.getCurrentImage());
-            updateStatus("Загружено: " + path);
-        } else {
-            view.showError("Не удалось загрузить изображение");
+        String pathString = view.showOpenFileDialog();
+        if (pathString == null) {
+            return;
         }
+
+        Path path = Paths.get(pathString);
+        Mat image = Imgcodecs.imread(pathString);
+
+        if (image.empty() && DicomImageLoader.isDicomFile(path)) {
+            try {
+                image = DicomImageLoader.load(path);
+            } catch (Exception ex) {
+                view.showError("Не удалось загрузить DICOM: " + ex.getMessage());
+                return;
+            }
+        }
+
+        if (image.empty()) {
+            view.showError("Не удалось загрузить изображение");
+            return;
+        }
+
+        model.loadImage(image);
+        view.displayImage(model.getCurrentImage());
+        updateStatus("Загружено: " + pathString);
     }
 
     public void onGrayFilter(ActionEvent e) {
@@ -88,8 +104,8 @@ public class ImageController {
 
     private void updateStatus(String message) {
         String info = model.hasImage() ? " [" + model.getImageInfo() + "]" : "";
-        view.updateStatus(message + info +
-                " | Undo: " + model.getUndoStackSize() +
-                " Redo: " + model.getRedoStackSize());
+        view.updateStatus(message + info
+                + " | Undo: " + model.getUndoStackSize()
+                + " Redo: " + model.getRedoStackSize());
     }
 }
