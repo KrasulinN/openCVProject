@@ -9,6 +9,7 @@ import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Arrays;
 import java.util.Locale;
 
 public final class DicomImageLoader {
@@ -28,10 +29,44 @@ public final class DicomImageLoader {
         }
     }
 
+    public static DicomSeriesInfo readSeriesInfo(Path path) {
+        try {
+            byte[] bytes = Files.readAllBytes(path);
+            if (bytes.length < 132 || !hasDicomPrefix(bytes)) {
+                return null;
+            }
+
+            DicomMetadata metadata = readMetadata(bytes);
+            if (metadata.seriesInstanceUid == null || metadata.seriesInstanceUid.trim().isEmpty()) {
+                return null;
+            }
+
+            String modality = metadata.modality == null || metadata.modality.trim().isEmpty()
+                    ? "DICOM"
+                    : metadata.modality.trim().toUpperCase(Locale.ROOT);
+            String groupKey = modality + " | SERIES:" + metadata.seriesInstanceUid.trim();
+            double sortPositionMm = computeSliceSortPosition(metadata);
+            double nominalSpacingMm = resolveNominalSpacingMm(metadata);
+            return new DicomSeriesInfo(
+                    groupKey,
+                    metadata.instanceNumber,
+                    sortPositionMm,
+                    nominalSpacingMm,
+                    metadata.imagePositionPatient,
+                    metadata.imageOrientationPatient,
+                    metadata.pixelSpacing,
+                    metadata.sliceThickness,
+                    metadata.spacingBetweenSlices
+            );
+        } catch (IOException e) {
+            return null;
+        }
+    }
+
     public static Mat load(Path path) throws IOException {
         byte[] bytes = Files.readAllBytes(path);
         if (bytes.length < 132 || !hasDicomPrefix(bytes)) {
-            throw new IOException("Файл не похож на DICOM");
+            throw new IOException("File is not a DICOM image");
         }
 
         DicomMetadata metadata = readMetadata(bytes);
@@ -48,29 +83,29 @@ public final class DicomImageLoader {
 
     private static void validateMetadata(DicomMetadata metadata, int fileLength) throws IOException {
         if (metadata.rows <= 0 || metadata.columns <= 0) {
-            throw new IOException("В DICOM не найдены размеры изображения");
+            throw new IOException("Image dimensions were not found in DICOM");
         }
         if (metadata.pixelDataOffset < 0 || metadata.pixelDataLength <= 0) {
-            throw new IOException("В DICOM не найден Pixel Data");
+            throw new IOException("Pixel Data tag was not found in DICOM");
         }
         if (metadata.samplesPerPixel != 1) {
-            throw new IOException("Поддерживаются только монохромные DICOM-изображения");
+            throw new IOException("Only monochrome DICOM images are supported");
         }
         if (metadata.bitsAllocated != 8 && metadata.bitsAllocated != 16) {
-            throw new IOException("Поддерживаются только 8-bit и 16-bit DICOM-изображения");
+            throw new IOException("Only 8-bit and 16-bit DICOM images are supported");
         }
         if (metadata.photometricInterpretation != null
                 && !metadata.photometricInterpretation.toUpperCase(Locale.ROOT).startsWith("MONOCHROME")) {
-            throw new IOException("Поддерживаются только MONOCHROME DICOM-изображения");
+            throw new IOException("Only MONOCHROME DICOM images are supported");
         }
         if (!EXPLICIT_VR_LITTLE_ENDIAN.equals(metadata.transferSyntaxUid)
                 && !IMPLICIT_VR_LITTLE_ENDIAN.equals(metadata.transferSyntaxUid)) {
-            throw new IOException("Поддерживаются только несжатые DICOM (Little Endian)");
+            throw new IOException("Only uncompressed Little Endian DICOM is supported");
         }
 
         int expectedBytes = metadata.rows * metadata.columns * (metadata.bitsAllocated / 8);
         if (metadata.pixelDataLength < expectedBytes || metadata.pixelDataOffset + expectedBytes > fileLength) {
-            throw new IOException("Недостаточно пиксельных данных");
+            throw new IOException("Not enough pixel data in DICOM file");
         }
     }
 
@@ -167,7 +202,7 @@ public final class DicomImageLoader {
 
             if (tagValue.valueOffset < 0 || tagValue.valueLength < 0
                     || tagValue.valueOffset + tagValue.valueLength > bytes.length) {
-                throw new IOException("Некорректная структура DICOM");
+                throw new IOException("Invalid DICOM structure");
             }
 
             if (group == 0x0002 && element == 0x0010) {
@@ -175,6 +210,18 @@ public final class DicomImageLoader {
                 explicitVr = !IMPLICIT_VR_LITTLE_ENDIAN.equals(metadata.transferSyntaxUid);
                 metadata.littleEndian = !EXPLICIT_VR_BIG_ENDIAN.equals(metadata.transferSyntaxUid);
                 syntaxResolved = true;
+            } else if (group == 0x0008 && element == 0x0060) {
+                metadata.modality = readAscii(bytes, tagValue.valueOffset, tagValue.valueLength);
+            } else if (group == 0x0020 && element == 0x000D) {
+                metadata.studyInstanceUid = readAscii(bytes, tagValue.valueOffset, tagValue.valueLength);
+            } else if (group == 0x0020 && element == 0x000E) {
+                metadata.seriesInstanceUid = readAscii(bytes, tagValue.valueOffset, tagValue.valueLength);
+            } else if (group == 0x0020 && element == 0x0013) {
+                metadata.instanceNumber = parseInteger(readAscii(bytes, tagValue.valueOffset, tagValue.valueLength));
+            } else if (group == 0x0020 && element == 0x0032) {
+                metadata.imagePositionPatient = parseDoubleArray(readAscii(bytes, tagValue.valueOffset, tagValue.valueLength));
+            } else if (group == 0x0020 && element == 0x0037) {
+                metadata.imageOrientationPatient = parseDoubleArray(readAscii(bytes, tagValue.valueOffset, tagValue.valueLength));
             } else if (group == 0x0028 && element == 0x0002) {
                 metadata.samplesPerPixel = readUnsignedShort(bytes, tagValue.valueOffset, metadata.littleEndian);
             } else if (group == 0x0028 && element == 0x0004) {
@@ -183,6 +230,8 @@ public final class DicomImageLoader {
                 metadata.rows = readUnsignedShort(bytes, tagValue.valueOffset, metadata.littleEndian);
             } else if (group == 0x0028 && element == 0x0011) {
                 metadata.columns = readUnsignedShort(bytes, tagValue.valueOffset, metadata.littleEndian);
+            } else if (group == 0x0028 && element == 0x0030) {
+                metadata.pixelSpacing = parseDoubleArray(readAscii(bytes, tagValue.valueOffset, tagValue.valueLength));
             } else if (group == 0x0028 && element == 0x0100) {
                 metadata.bitsAllocated = readUnsignedShort(bytes, tagValue.valueOffset, metadata.littleEndian);
             } else if (group == 0x0028 && element == 0x0103) {
@@ -195,6 +244,10 @@ public final class DicomImageLoader {
                 metadata.rescaleIntercept = parseDouble(readAscii(bytes, tagValue.valueOffset, tagValue.valueLength));
             } else if (group == 0x0028 && element == 0x1053) {
                 metadata.rescaleSlope = parseDouble(readAscii(bytes, tagValue.valueOffset, tagValue.valueLength));
+            } else if (group == 0x0018 && element == 0x0050) {
+                metadata.sliceThickness = parseDouble(readAscii(bytes, tagValue.valueOffset, tagValue.valueLength));
+            } else if (group == 0x0018 && element == 0x0088) {
+                metadata.spacingBetweenSlices = parseDouble(readAscii(bytes, tagValue.valueOffset, tagValue.valueLength));
             } else if (group == 0x7FE0 && element == 0x0010) {
                 metadata.pixelDataOffset = tagValue.valueOffset;
                 metadata.pixelDataLength = tagValue.valueLength;
@@ -205,6 +258,93 @@ public final class DicomImageLoader {
         }
 
         return metadata;
+    }
+
+    private static double computeSliceSortPosition(DicomMetadata metadata) {
+        if (metadata.imagePositionPatient == null || metadata.imagePositionPatient.length < 3) {
+            return Double.NaN;
+        }
+
+        if (metadata.imageOrientationPatient == null || metadata.imageOrientationPatient.length < 6) {
+            return metadata.imagePositionPatient[2];
+        }
+
+        double[] rowDirection = normalizeVector(
+                metadata.imageOrientationPatient[0],
+                metadata.imageOrientationPatient[1],
+                metadata.imageOrientationPatient[2]
+        );
+        double[] columnDirection = normalizeVector(
+                metadata.imageOrientationPatient[3],
+                metadata.imageOrientationPatient[4],
+                metadata.imageOrientationPatient[5]
+        );
+
+        double[] normal = cross(rowDirection, columnDirection);
+        double length = vectorLength(normal);
+        if (length < 1e-8) {
+            return metadata.imagePositionPatient[2];
+        }
+
+        double[] unitNormal = new double[]{normal[0] / length, normal[1] / length, normal[2] / length};
+        return dot(metadata.imagePositionPatient, unitNormal);
+    }
+
+    private static double resolveNominalSpacingMm(DicomMetadata metadata) {
+        if (Double.isFinite(metadata.spacingBetweenSlices) && metadata.spacingBetweenSlices > 0.0) {
+            return metadata.spacingBetweenSlices;
+        }
+        if (Double.isFinite(metadata.sliceThickness) && metadata.sliceThickness > 0.0) {
+            return metadata.sliceThickness;
+        }
+        return Double.NaN;
+    }
+
+    private static double[] parseDoubleArray(String value) {
+        if (value == null || value.trim().isEmpty()) {
+            return null;
+        }
+
+        String[] parts = value.split("\\\\");
+        double[] result = new double[parts.length];
+        int count = 0;
+        for (String part : parts) {
+            String trimmed = part.trim();
+            if (trimmed.isEmpty()) {
+                continue;
+            }
+            try {
+                result[count++] = Double.parseDouble(trimmed);
+            } catch (NumberFormatException ex) {
+                return null;
+            }
+        }
+
+        return count == 0 ? null : Arrays.copyOf(result, count);
+    }
+
+    private static double[] normalizeVector(double x, double y, double z) {
+        double length = Math.sqrt(x * x + y * y + z * z);
+        if (length < 1e-8) {
+            return new double[]{x, y, z};
+        }
+        return new double[]{x / length, y / length, z / length};
+    }
+
+    private static double[] cross(double[] left, double[] right) {
+        return new double[]{
+                left[1] * right[2] - left[2] * right[1],
+                left[2] * right[0] - left[0] * right[2],
+                left[0] * right[1] - left[1] * right[0]
+        };
+    }
+
+    private static double dot(double[] left, double[] right) {
+        return left[0] * right[0] + left[1] * right[1] + left[2] * right[2];
+    }
+
+    private static double vectorLength(double[] vector) {
+        return Math.sqrt(dot(vector, vector));
     }
 
     private static TagValue readTagValue(byte[] bytes, ByteBuffer littleEndianBuffer, int position, boolean explicitVr) {
@@ -249,8 +389,89 @@ public final class DicomImageLoader {
         return Double.parseDouble(firstValue.trim());
     }
 
+    private static int parseInteger(String value) {
+        if (value == null || value.trim().isEmpty()) {
+            return Integer.MAX_VALUE;
+        }
+
+        int separator = value.indexOf('\\');
+        String firstValue = separator >= 0 ? value.substring(0, separator) : value;
+        try {
+            return Integer.parseInt(firstValue.trim());
+        } catch (NumberFormatException ex) {
+            return Integer.MAX_VALUE;
+        }
+    }
+
     private static boolean hasDicomPrefix(byte[] bytes) {
         return bytes[128] == 'D' && bytes[129] == 'I' && bytes[130] == 'C' && bytes[131] == 'M';
+    }
+
+    public static final class DicomSeriesInfo {
+        private final String groupKey;
+        private final int instanceNumber;
+        private final double sliceSortPositionMm;
+        private final double nominalSliceSpacingMm;
+        private final double[] imagePositionPatient;
+        private final double[] imageOrientationPatient;
+        private final double[] pixelSpacing;
+        private final double sliceThicknessMm;
+        private final double spacingBetweenSlicesMm;
+
+        private DicomSeriesInfo(String groupKey, int instanceNumber, double sliceSortPositionMm,
+                                double nominalSliceSpacingMm, double[] imagePositionPatient,
+                                double[] imageOrientationPatient, double[] pixelSpacing,
+                                double sliceThicknessMm, double spacingBetweenSlicesMm) {
+            this.groupKey = groupKey;
+            this.instanceNumber = instanceNumber;
+            this.sliceSortPositionMm = sliceSortPositionMm;
+            this.nominalSliceSpacingMm = nominalSliceSpacingMm;
+            this.imagePositionPatient = imagePositionPatient == null ? null : imagePositionPatient.clone();
+            this.imageOrientationPatient = imageOrientationPatient == null ? null : imageOrientationPatient.clone();
+            this.pixelSpacing = pixelSpacing == null ? null : pixelSpacing.clone();
+            this.sliceThicknessMm = sliceThicknessMm;
+            this.spacingBetweenSlicesMm = spacingBetweenSlicesMm;
+        }
+
+        public String getGroupKey() {
+            return groupKey;
+        }
+
+        public int getInstanceNumber() {
+            return instanceNumber;
+        }
+
+        public double getSliceSortPositionMm() {
+            return sliceSortPositionMm;
+        }
+
+        public double getNominalSliceSpacingMm() {
+            return nominalSliceSpacingMm;
+        }
+
+        public double[] getImagePositionPatient() {
+            return imagePositionPatient == null ? null : imagePositionPatient.clone();
+        }
+
+        public double[] getImageOrientationPatient() {
+            return imageOrientationPatient == null ? null : imageOrientationPatient.clone();
+        }
+
+        public double[] getPixelSpacing() {
+            return pixelSpacing == null ? null : pixelSpacing.clone();
+        }
+
+        public double getSliceThicknessMm() {
+            return sliceThicknessMm;
+        }
+
+        public double getSpacingBetweenSlicesMm() {
+            return spacingBetweenSlicesMm;
+        }
+
+        public boolean hasSpatialGeometry() {
+            return Double.isFinite(sliceSortPositionMm);
+        }
     }
 
     private static final class TagValue {
@@ -269,12 +490,21 @@ public final class DicomImageLoader {
         private int samplesPerPixel = 1;
         private int bitsAllocated;
         private boolean pixelRepresentationSigned;
+        private double[] imagePositionPatient;
+        private double[] imageOrientationPatient;
+        private double[] pixelSpacing;
+        private double sliceThickness = Double.NaN;
+        private double spacingBetweenSlices = Double.NaN;
         private double windowCenter;
         private double windowWidth;
         private double rescaleIntercept;
         private double rescaleSlope = 1.0;
         private String photometricInterpretation;
         private String transferSyntaxUid;
+        private String modality;
+        private String studyInstanceUid;
+        private String seriesInstanceUid;
+        private int instanceNumber = Integer.MAX_VALUE;
         private boolean littleEndian = true;
         private int pixelDataOffset = -1;
         private int pixelDataLength = -1;

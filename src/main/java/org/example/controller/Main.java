@@ -1,30 +1,29 @@
 package org.example.controller;
 
+import nu.pattern.OpenCV;
 import org.example.model.ImageModel;
+import org.example.model.ImageSeriesModel;
 import org.example.view.MainView;
-import org.example.utils.OpenCVLoader;
 
 import javax.swing.*;
 
 public class Main {
     public static void main(String[] args) {
-        // Загружаем OpenCV
-        if (!OpenCVLoader.loadOpenCV()) {
+        try {
+            OpenCV.loadLocally();
+        } catch (Throwable t) {
             JOptionPane.showMessageDialog(null,
-                    "Не удалось загрузить OpenCV!\nПроверьте путь к DLL.",
+                    "Не удалось загрузить OpenCV!\nПроверьте установку native DLL.",
                     "Критическая ошибка",
                     JOptionPane.ERROR_MESSAGE);
             System.exit(1);
         }
 
-        // Создаем компоненты MVC
         ImageModel model = new ImageModel();
+        ImageSeriesModel seriesModel = new ImageSeriesModel();
         MainView view = new MainView();
-        ImageController controller = new ImageController(model, view);
+        new ImageController(model, seriesModel, view);
 
-        // Запускаем приложение
-        SwingUtilities.invokeLater(() -> {
-            view.setVisible(true);
-        });
+        SwingUtilities.invokeLater(() -> view.setVisible(true));
     }
 }
