@@ -2,6 +2,8 @@ package org.example.controller;
 
 import org.example.filters.FilterBatch;
 import org.example.filters.ContourFilter;
+import org.example.filters.FilterStrategy;
+import org.example.filters.ThresholdFilter;
 import org.example.model.ImageModel;
 import org.example.model.ImageSeriesModel;
 import org.example.model.SeriesImageItem;
@@ -24,19 +26,21 @@ public class ImageController {
     private final ImageModel model;
     private final ImageSeriesModel seriesModel;
     private final MainView view;
-    private FilterBatch activeContourBatch;
-    private String activeContourGroupKey;
-    private boolean contourApplied;
-    private boolean contourCanRedo;
+    private FilterBatch activeGroupBatch;
+    private String activeGroupKey;
+    private boolean groupFilterApplied;
+    private boolean groupFilterCanRedo;
+    private String activeGroupFilterName;
 
     public ImageController(ImageModel model, ImageSeriesModel seriesModel, MainView view) {
         this.model = model;
         this.seriesModel = seriesModel;
         this.view = view;
-        this.activeContourBatch = null;
-        this.activeContourGroupKey = null;
-        this.contourApplied = false;
-        this.contourCanRedo = false;
+        this.activeGroupBatch = null;
+        this.activeGroupKey = null;
+        this.groupFilterApplied = false;
+        this.groupFilterCanRedo = false;
+        this.activeGroupFilterName = null;
 
         this.view.setController(this);
         this.view.setGroupFilterListener(this::onGroupFilterChanged);
@@ -92,7 +96,7 @@ public class ImageController {
     }
 
     public void onUndo(ActionEvent e) {
-        if (undoContourFilter()) {
+        if (undoGroupFilter()) {
             return;
         }
 
@@ -106,7 +110,7 @@ public class ImageController {
     }
 
     public void onRedo(ActionEvent e) {
-        if (redoContourFilter()) {
+        if (redoGroupFilter()) {
             return;
         }
 
@@ -120,7 +124,7 @@ public class ImageController {
     }
 
     public void onReset(ActionEvent e) {
-        if (resetContourFilter()) {
+        if (resetGroupFilter()) {
             return;
         }
 
@@ -153,7 +157,7 @@ public class ImageController {
         if (loadedItems.isEmpty()) {
             model.clear();
             seriesModel.clear();
-            clearContourFilterState();
+            clearGroupFilterState();
             refreshSeriesBrowser();
             view.displayImage(null);
             view.showError("Не удалось загрузить ни один снимок.");
@@ -162,7 +166,7 @@ public class ImageController {
 
         String currentFilter = seriesModel.getGroupFilter();
         seriesModel.replaceItems(loadedItems);
-        clearContourFilterState();
+        clearGroupFilterState();
         if (currentFilter != null && seriesModel.findFirstItemInGroup(currentFilter) == null) {
             seriesModel.setGroupFilter(null);
         }
@@ -276,32 +280,114 @@ public class ImageController {
     }
 
     public void onApplyContourToGroup(ActionEvent e) {
+        applyFilterToSelectedGroup("Поиск контуров", new ContourFilter(), "contour");
+    }
+
+    public void onContourFilterToggled(ActionEvent e) {
+        if (view.isContourFilterSelected()) {
+            applyFilterToSelectedGroup("Поиск контуров", new ContourFilter(), "contour");
+        } else {
+            resetContourFilter();
+        }
+    }
+
+    public void onThresholdFilterToggled(ActionEvent e) {
+        if (view.isThresholdFilterSelected()) {
+            applyThresholdToSelectedGroup(true);
+        } else {
+            resetThresholdFilter();
+        }
+    }
+
+    public void onThresholdSettingsChanged() {
+        if (view.isThresholdFilterSelected()) {
+            applyThresholdToSelectedGroup(false);
+        }
+    }
+
+    private void applyThresholdToSelectedGroup(boolean showValidationErrors) {
+        applyFilterToSelectedGroup(
+                "Пороговая фильтрация",
+                new ThresholdFilter(
+                        view.getThresholdValue(),
+                        view.getThresholdMaxValue(),
+                        view.getThresholdType(),
+                        view.getThresholdOpacity()
+                ),
+                "threshold",
+                showValidationErrors
+        );
+    }
+
+    private void applyFilterToSelectedGroup(String filterName, FilterStrategy filter, String filterKey) {
+        applyFilterToSelectedGroup(filterName, filter, filterKey, true);
+    }
+
+    private void applyFilterToSelectedGroup(String filterName, FilterStrategy filter, String filterKey,
+                                            boolean showValidationErrors) {
         String selectedGroup = view.getSelectedGroupFilter();
         if (selectedGroup == null || selectedGroup.isEmpty() || selectedGroup.equals("Все группы")) {
-            view.showError("Выберите группу снимков");
+            if (showValidationErrors) {
+                view.showError("Выберите группу снимков");
+            }
+            if ("threshold".equals(filterKey)) {
+                view.setThresholdFilterApplied(false);
+            }
+            if ("contour".equals(filterKey)) {
+                view.setContourFilterApplied(false);
+            }
             return;
         }
 
         List<SeriesImageItem> itemsInGroup = findItemsInGroup(selectedGroup);
         if (itemsInGroup.isEmpty()) {
-            view.showError("В группе нет снимков");
+            if (showValidationErrors) {
+                view.showError("В группе нет снимков");
+            }
+            if ("threshold".equals(filterKey)) {
+                view.setThresholdFilterApplied(false);
+            }
+            if ("contour".equals(filterKey)) {
+                view.setContourFilterApplied(false);
+            }
             return;
         }
 
-        FilterBatch batch = model.createFilterBatch("Поиск контуров для " + selectedGroup);
-        batch.addFilter(new ContourFilter());
+        SeriesImageItem selectedItem = seriesModel.getSelectedItem();
+        resetActiveGroupFilter();
+
+        FilterBatch batch = model.createFilterBatch(filterName + " для " + selectedGroup);
+        batch.addFilter(filter);
         batch.applyToItems(itemsInGroup);
 
-        activeContourBatch = batch;
-        activeContourGroupKey = selectedGroup;
-        contourApplied = true;
-        contourCanRedo = false;
+        activeGroupBatch = batch;
+        activeGroupKey = selectedGroup;
+        groupFilterApplied = true;
+        groupFilterCanRedo = false;
+        activeGroupFilterName = filterKey;
+        updateFilterAppliedIndicators();
 
-        refreshSeriesBrowser();
-        selectFirstVisibleItem();
+        refreshSeriesBrowserKeepingSelection(selectedItem);
         updateStatus("Фильтр '" + batch.getName() + "' применен к " + itemsInGroup.size() + " снимкам");
     }
 
+    private void resetThresholdFilter() {
+        if (!"threshold".equals(activeGroupFilterName)) {
+            view.setThresholdFilterApplied(false);
+            return;
+        }
+
+        resetGroupFilter();
+    }
+
+    private void resetContourFilter() {
+        if (!"contour".equals(activeGroupFilterName)) {
+            view.setContourFilterApplied(false);
+            return;
+        }
+
+        resetGroupFilter();
+    }
 
     private List<SeriesImageItem> findItemsInGroup(String groupKey) {
         List<SeriesImageItem> itemsInGroup = new ArrayList<>();
@@ -314,67 +400,95 @@ public class ImageController {
         return itemsInGroup;
     }
 
-    private void clearContourFilterState() {
-        activeContourBatch = null;
-        activeContourGroupKey = null;
-        contourApplied = false;
-        contourCanRedo = false;
+    private void clearGroupFilterState() {
+        activeGroupBatch = null;
+        activeGroupKey = null;
+        groupFilterApplied = false;
+        groupFilterCanRedo = false;
+        activeGroupFilterName = null;
+        view.clearFilterAppliedIndicators();
     }
 
-    private boolean undoContourFilter() {
-        if (!contourApplied || activeContourBatch == null || activeContourGroupKey == null) {
+    private void resetActiveGroupFilter() {
+        if (activeGroupBatch == null || activeGroupKey == null) {
+            return;
+        }
+
+        List<SeriesImageItem> activeItems = findItemsInGroup(activeGroupKey);
+        if (!activeItems.isEmpty()) {
+            activeGroupBatch.removeFromItems(activeItems);
+        }
+    }
+
+    private boolean undoGroupFilter() {
+        if (!groupFilterApplied || activeGroupBatch == null || activeGroupKey == null) {
             return false;
         }
 
-        List<SeriesImageItem> itemsInGroup = findItemsInGroup(activeContourGroupKey);
+        List<SeriesImageItem> itemsInGroup = findItemsInGroup(activeGroupKey);
         if (itemsInGroup.isEmpty()) {
-            clearContourFilterState();
+            clearGroupFilterState();
             return false;
         }
 
-        activeContourBatch.removeFromItems(itemsInGroup);
-        contourApplied = false;
-        contourCanRedo = true;
-        refreshSeriesBrowser();
-        selectFirstVisibleItem();
+        SeriesImageItem selectedItem = seriesModel.getSelectedItem();
+        activeGroupBatch.removeFromItems(itemsInGroup);
+        groupFilterApplied = false;
+        groupFilterCanRedo = true;
+        updateFilterAppliedIndicators();
+        refreshSeriesBrowserKeepingSelection(selectedItem);
         updateStatus("Фильтр группы отменен");
         return true;
     }
 
-    private boolean redoContourFilter() {
-        if (contourApplied || !contourCanRedo || activeContourBatch == null || activeContourGroupKey == null) {
+    private boolean redoGroupFilter() {
+        if (groupFilterApplied || !groupFilterCanRedo || activeGroupBatch == null || activeGroupKey == null) {
             return false;
         }
 
-        List<SeriesImageItem> itemsInGroup = findItemsInGroup(activeContourGroupKey);
+        List<SeriesImageItem> itemsInGroup = findItemsInGroup(activeGroupKey);
         if (itemsInGroup.isEmpty()) {
-            clearContourFilterState();
+            clearGroupFilterState();
             return false;
         }
 
-        activeContourBatch.applyToItems(itemsInGroup);
-        contourApplied = true;
-        contourCanRedo = false;
-        refreshSeriesBrowser();
-        selectFirstVisibleItem();
+        SeriesImageItem selectedItem = seriesModel.getSelectedItem();
+        activeGroupBatch.applyToItems(itemsInGroup);
+        groupFilterApplied = true;
+        groupFilterCanRedo = false;
+        updateFilterAppliedIndicators();
+        refreshSeriesBrowserKeepingSelection(selectedItem);
         updateStatus("Фильтр группы восстановлен");
         return true;
     }
 
-    private boolean resetContourFilter() {
-        if (activeContourBatch == null || activeContourGroupKey == null) {
+    private boolean resetGroupFilter() {
+        if (activeGroupBatch == null || activeGroupKey == null) {
             return false;
         }
 
-        List<SeriesImageItem> itemsInGroup = findItemsInGroup(activeContourGroupKey);
+        List<SeriesImageItem> itemsInGroup = findItemsInGroup(activeGroupKey);
         if (!itemsInGroup.isEmpty()) {
-            activeContourBatch.removeFromItems(itemsInGroup);
+            activeGroupBatch.removeFromItems(itemsInGroup);
         }
 
-        clearContourFilterState();
-        refreshSeriesBrowser();
-        selectFirstVisibleItem();
+        SeriesImageItem selectedItem = seriesModel.getSelectedItem();
+        clearGroupFilterState();
+        refreshSeriesBrowserKeepingSelection(selectedItem);
         updateStatus("Фильтр группы сброшен");
         return true;
+    }
+
+    private void refreshSeriesBrowserKeepingSelection(SeriesImageItem selectedItem) {
+        refreshSeriesBrowser();
+        if (selectedItem != null && seriesModel.isVisible(selectedItem) && view.selectSeriesItem(selectedItem)) {
+            return;
+        }
+        selectFirstVisibleItem();
+    }
+
+    private void updateFilterAppliedIndicators() {
+        view.setThresholdFilterApplied(groupFilterApplied && "threshold".equals(activeGroupFilterName));
+        view.setContourFilterApplied(groupFilterApplied && "contour".equals(activeGroupFilterName));
     }
 }

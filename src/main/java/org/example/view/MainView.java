@@ -1,6 +1,8 @@
 package org.example.view;
 
 import org.example.controller.ImageController;
+import org.example.filters.ThresholdFilter;
+import org.example.model.SeriesImageItem;
 import org.example.model.SeriesTreeNodeData;
 import org.opencv.core.Mat;
 import org.opencv.imgproc.Imgproc;
@@ -22,7 +24,11 @@ import java.util.List;
 import java.util.function.Consumer;
 
 public class MainView extends JFrame {
+
     private static final String ALL_GROUPS_LABEL = "Все группы";
+    private static final int DEFAULT_THRESHOLD_VALUE = 140;
+    private static final int DEFAULT_THRESHOLD_MAX_VALUE = 180;
+    private static final int DEFAULT_THRESHOLD_OPACITY = 50;
 
     private final ImageCanvas imagePanel;
     private final JTree seriesTree;
@@ -35,11 +41,21 @@ public class MainView extends JFrame {
     private JMenuItem redoMenuItem;
     private JMenuItem resetMenuItem;
     private JMenuItem contourInGroupMenuItem;
+    private JSlider thresholdSlider;
+    private JSlider thresholdMaxSlider;
+    private JSlider thresholdOpacitySlider;
+    private JComboBox<ThresholdFilter.ThresholdType> thresholdTypeCombo;
+    private JLabel thresholdValueLabel;
+    private JLabel thresholdMaxValueLabel;
+    private JLabel thresholdOpacityValueLabel;
+    private JCheckBox thresholdAppliedCheckBox;
+    private JCheckBox contourAppliedCheckBox;
 
     private DefaultTreeModel seriesTreeModel;
     private boolean updatingGroupFilter;
     private Consumer<String> groupFilterListener;
     private Consumer<SeriesTreeNodeData> seriesSelectionListener;
+    private Runnable thresholdSettingsChangeListener;
 
     public MainView() {
         setTitle("Medical Image Editor");
@@ -69,7 +85,7 @@ public class MainView extends JFrame {
         seriesTree.setCellRenderer(new DefaultTreeCellRenderer() {
             @Override
             public Component getTreeCellRendererComponent(JTree tree, Object value, boolean selected, boolean expanded,
-                                                          boolean leaf, int row, boolean hasFocus) {
+                    boolean leaf, int row, boolean hasFocus) {
                 super.getTreeCellRendererComponent(tree, value, selected, expanded, leaf, row, hasFocus);
                 if (value instanceof DefaultMutableTreeNode) {
                     Object userObject = ((DefaultMutableTreeNode) value).getUserObject();
@@ -170,8 +186,183 @@ public class MainView extends JFrame {
         splitPane.setResizeWeight(0.26);
         splitPane.setDividerLocation(320);
 
-        add(splitPane, BorderLayout.CENTER);
+        JPanel workspacePanel = new JPanel(new BorderLayout());
+        workspacePanel.add(splitPane, BorderLayout.CENTER);
+        workspacePanel.add(createFiltersPanel(), BorderLayout.EAST);
+
+        add(workspacePanel, BorderLayout.CENTER);
         add(statusLabel, BorderLayout.SOUTH);
+    }
+
+    private JPanel createFiltersPanel() {
+        JPanel filtersPanel = new JPanel();
+        filtersPanel.setLayout(new BoxLayout(filtersPanel, BoxLayout.Y_AXIS));
+        filtersPanel.setPreferredSize(new Dimension(260, 0));
+        filtersPanel.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createMatteBorder(0, 1, 0, 0, Color.LIGHT_GRAY),
+                BorderFactory.createEmptyBorder(10, 10, 10, 10)
+        ));
+
+        JLabel titleLabel = new JLabel("Фильтры");
+        titleLabel.setFont(titleLabel.getFont().deriveFont(Font.BOLD, 16f));
+        titleLabel.setAlignmentX(Component.LEFT_ALIGNMENT);
+
+        filtersPanel.add(titleLabel);
+        filtersPanel.add(Box.createVerticalStrut(12));
+        filtersPanel.add(createThresholdSection());
+        filtersPanel.add(Box.createVerticalStrut(12));
+        filtersPanel.add(createContourSection());
+        filtersPanel.add(Box.createVerticalGlue());
+
+        return filtersPanel;
+    }
+
+    private JPanel createThresholdSection() {
+        JPanel section = createFilterSection("Пороговая фильтрация");
+        thresholdValueLabel = createFilterValueLabel("Порог: " + DEFAULT_THRESHOLD_VALUE);
+        thresholdSlider = createFilterSlider(DEFAULT_THRESHOLD_VALUE);
+        thresholdSlider.addChangeListener(e -> {
+            thresholdValueLabel.setText("Порог: " + thresholdSlider.getValue());
+            notifyThresholdSettingsChanged();
+        });
+
+        thresholdMaxValueLabel = createFilterValueLabel("Макс: " + DEFAULT_THRESHOLD_MAX_VALUE);
+        thresholdMaxSlider = createFilterSlider(DEFAULT_THRESHOLD_MAX_VALUE);
+        thresholdMaxSlider.addChangeListener(e -> {
+            thresholdMaxValueLabel.setText("Макс: " + thresholdMaxSlider.getValue());
+            notifyThresholdSettingsChanged();
+        });
+
+        thresholdOpacityValueLabel = createFilterValueLabel("Наложение: " + DEFAULT_THRESHOLD_OPACITY + "%");
+        thresholdOpacitySlider = createOpacitySlider(DEFAULT_THRESHOLD_OPACITY);
+        thresholdOpacitySlider.addChangeListener(e -> {
+            thresholdOpacityValueLabel.setText("Наложение: " + thresholdOpacitySlider.getValue() + "%");
+            notifyThresholdSettingsChanged();
+        });
+
+        thresholdAppliedCheckBox = createFilterToggleCheckBox("Включить");
+        thresholdTypeCombo = new JComboBox<>(ThresholdFilter.ThresholdType.values());
+        thresholdTypeCombo.setAlignmentX(Component.LEFT_ALIGNMENT);
+        thresholdTypeCombo.setMaximumSize(new Dimension(Integer.MAX_VALUE, 30));
+        thresholdTypeCombo.addActionListener(e -> notifyThresholdSettingsChanged());
+
+        section.add(thresholdAppliedCheckBox);
+        section.add(Box.createVerticalStrut(8));
+        section.add(createFilterValueLabel("Тип"));
+        section.add(thresholdTypeCombo);
+        section.add(Box.createVerticalStrut(8));
+        section.add(thresholdValueLabel);
+        section.add(thresholdSlider);
+        section.add(Box.createVerticalStrut(8));
+        section.add(thresholdMaxValueLabel);
+        section.add(thresholdMaxSlider);
+        section.add(Box.createVerticalStrut(8));
+        section.add(thresholdOpacityValueLabel);
+        section.add(thresholdOpacitySlider);
+        return section;
+    }
+
+    private JPanel createContourSection() {
+        JPanel section = createFilterSection("Контуры");
+        contourAppliedCheckBox = createFilterToggleCheckBox("Включить");
+        section.add(contourAppliedCheckBox);
+        return section;
+    }
+
+    private JPanel createFilterSection(String title) {
+        JPanel section = new JPanel();
+        section.setLayout(new BoxLayout(section, BoxLayout.Y_AXIS));
+        section.setAlignmentX(Component.LEFT_ALIGNMENT);
+        section.setMaximumSize(new Dimension(Integer.MAX_VALUE, 320));
+        section.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createTitledBorder(title),
+                BorderFactory.createEmptyBorder(8, 8, 8, 8)
+        ));
+        return section;
+    }
+
+    private JLabel createFilterValueLabel(String text) {
+        JLabel label = new JLabel(text);
+        label.setAlignmentX(Component.LEFT_ALIGNMENT);
+        return label;
+    }
+
+    private JSlider createFilterSlider(int value) {
+        JSlider slider = new JSlider(0, 255, value);
+        slider.setAlignmentX(Component.LEFT_ALIGNMENT);
+        slider.setMaximumSize(new Dimension(Integer.MAX_VALUE, 42));
+        slider.setMajorTickSpacing(85);
+        slider.setMinorTickSpacing(17);
+        slider.setPaintTicks(true);
+        return slider;
+    }
+
+    private JSlider createOpacitySlider(int value) {
+        JSlider slider = new JSlider(0, 100, value);
+        slider.setAlignmentX(Component.LEFT_ALIGNMENT);
+        slider.setMaximumSize(new Dimension(Integer.MAX_VALUE, 42));
+        slider.setMajorTickSpacing(25);
+        slider.setMinorTickSpacing(5);
+        slider.setPaintTicks(true);
+        return slider;
+    }
+
+    private JCheckBox createFilterToggleCheckBox(String text) {
+        JCheckBox checkBox = new JCheckBox(text);
+        checkBox.setAlignmentX(Component.LEFT_ALIGNMENT);
+        checkBox.setFocusable(false);
+        return checkBox;
+    }
+
+    public void setThresholdFilterApplied(boolean applied) {
+        thresholdAppliedCheckBox.setSelected(applied);
+    }
+
+    public void setContourFilterApplied(boolean applied) {
+        contourAppliedCheckBox.setSelected(applied);
+    }
+
+    public void clearFilterAppliedIndicators() {
+        setThresholdFilterApplied(false);
+        setContourFilterApplied(false);
+    }
+
+    public int getThresholdValue() {
+        return thresholdSlider.getValue();
+    }
+
+    public int getThresholdMaxValue() {
+        return thresholdMaxSlider.getValue();
+    }
+
+    public double getThresholdOpacity() {
+        return thresholdOpacitySlider.getValue() / 100.0;
+    }
+
+    public boolean isThresholdFilterSelected() {
+        return thresholdAppliedCheckBox.isSelected();
+    }
+
+    public boolean isContourFilterSelected() {
+        return contourAppliedCheckBox.isSelected();
+    }
+
+    public ThresholdFilter.ThresholdType getThresholdType() {
+        Object selectedItem = thresholdTypeCombo.getSelectedItem();
+        if (selectedItem instanceof ThresholdFilter.ThresholdType) {
+            return (ThresholdFilter.ThresholdType) selectedItem;
+        }
+        return ThresholdFilter.ThresholdType.BINARY;
+    }
+
+    public void setThresholdSettingsChangeListener(Runnable listener) {
+        this.thresholdSettingsChangeListener = listener;
+    }
+
+    private void notifyThresholdSettingsChanged() {
+        if (thresholdSettingsChangeListener != null) {
+            thresholdSettingsChangeListener.run();
+        }
     }
 
     public void setController(ImageController controller) {
@@ -181,6 +372,9 @@ public class MainView extends JFrame {
         redoMenuItem.addActionListener(controller::onRedo);
         resetMenuItem.addActionListener(controller::onReset);
         contourInGroupMenuItem.addActionListener(controller::onApplyContourToGroup);
+        contourAppliedCheckBox.addActionListener(controller::onContourFilterToggled);
+        thresholdAppliedCheckBox.addActionListener(controller::onThresholdFilterToggled);
+        setThresholdSettingsChangeListener(controller::onThresholdSettingsChanged);
 
         groupFilterCombo.addActionListener(e -> {
             if (!updatingGroupFilter && groupFilterListener != null) {
@@ -244,6 +438,51 @@ public class MainView extends JFrame {
         TreePath path = new TreePath(imageNode.getPath());
         seriesTree.setSelectionPath(path);
         seriesTree.scrollPathToVisible(path);
+    }
+
+    public boolean selectSeriesItem(SeriesImageItem targetItem) {
+        if (seriesTreeModel == null || targetItem == null) {
+            return false;
+        }
+
+        DefaultMutableTreeNode root = (DefaultMutableTreeNode) seriesTreeModel.getRoot();
+        if (root == null) {
+            return false;
+        }
+
+        DefaultMutableTreeNode imageNode = findImageNode(root, targetItem);
+        if (imageNode == null) {
+            return false;
+        }
+
+        TreePath path = new TreePath(imageNode.getPath());
+        seriesTree.setSelectionPath(path);
+        seriesTree.scrollPathToVisible(path);
+        return true;
+    }
+
+    private DefaultMutableTreeNode findImageNode(DefaultMutableTreeNode root, SeriesImageItem targetItem) {
+        for (int groupIndex = 0; groupIndex < root.getChildCount(); groupIndex++) {
+            DefaultMutableTreeNode groupNode = (DefaultMutableTreeNode) root.getChildAt(groupIndex);
+            for (int imageIndex = 0; imageIndex < groupNode.getChildCount(); imageIndex++) {
+                DefaultMutableTreeNode imageNode = (DefaultMutableTreeNode) groupNode.getChildAt(imageIndex);
+                Object userObject = imageNode.getUserObject();
+                if (userObject instanceof SeriesTreeNodeData) {
+                    SeriesImageItem item = ((SeriesTreeNodeData) userObject).getItem();
+                    if (item == targetItem || hasSamePath(item, targetItem)) {
+                        return imageNode;
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
+    private boolean hasSamePath(SeriesImageItem left, SeriesImageItem right) {
+        if (left == null || right == null || left.getPath() == null || right.getPath() == null) {
+            return false;
+        }
+        return left.getPath().equals(right.getPath());
     }
 
     public void clearSeriesSelection() {
@@ -361,6 +600,7 @@ public class MainView extends JFrame {
     }
 
     private static final class ImageCanvas extends JPanel {
+
         private BufferedImage image;
 
         private ImageCanvas() {

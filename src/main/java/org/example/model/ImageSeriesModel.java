@@ -95,6 +95,23 @@ public class ImageSeriesModel {
         selectedItem = item;
     }
 
+    public SeriesImageItem getSelectedItem() {
+        return selectedItem;
+    }
+
+    public boolean isVisible(SeriesImageItem targetItem) {
+        if (targetItem == null) {
+            return false;
+        }
+
+        for (SeriesImageItem item : getVisibleItems()) {
+            if (item == targetItem || hasSamePath(item, targetItem)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     public void updateSelectedItemImage(Mat image) {
         if (selectedItem != null) {
             selectedItem.setImage(image);
@@ -214,6 +231,13 @@ public class ImageSeriesModel {
             return 2;
         }
         return 3;
+    }
+
+    private boolean hasSamePath(SeriesImageItem left, SeriesImageItem right) {
+        if (left == null || right == null || left.getPath() == null || right.getPath() == null) {
+            return false;
+        }
+        return left.getPath().equals(right.getPath());
     }
 
     public static String extractGroupKey(Path path) {
