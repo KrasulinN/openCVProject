@@ -75,6 +75,10 @@ public class SeriesImageItem {
         return originalImage != null && !originalImage.empty();
     }
 
+    public Mat getOriginalImage() {
+        return originalImage;
+    }
+
     public void resetToOriginal() {
         if (originalImage != null && !originalImage.empty()) {
             this.image = originalImage.clone();

@@ -24,6 +24,10 @@ public class FilterBatch {
         return name;
     }
 
+    public List<FilterStrategy> getFilters() {
+        return new ArrayList<>(filters);
+    }
+
     public void applyToItems(List<SeriesImageItem> items) {
         if (items == null || items.isEmpty() || filters.isEmpty()) {
             return;

@@ -28,6 +28,8 @@ public class MainView extends JFrame {
     private final JTree seriesTree;
     private final JComboBox<String> groupFilterCombo;
     private final JLabel statusLabel;
+    private final JTextField minBrightnessField;
+    private final JTextField maxBrightnessField;
 
     private JMenuItem openFilesMenuItem;
     private JMenuItem openFolderMenuItem;
@@ -47,11 +49,14 @@ public class MainView extends JFrame {
         setSize(1200, 760);
         setLocationRelativeTo(null);
 
-        imagePanel = new ImageCanvas();
-        seriesTree = new JTree(createEmptyTreeModel());
-        groupFilterCombo = new JComboBox<>();
         statusLabel = new JLabel("Готов к работе");
         statusLabel.setBorder(BorderFactory.createEmptyBorder(5, 10, 5, 10));
+        minBrightnessField = new JTextField("0", 4);
+        maxBrightnessField = new JTextField("255", 4);
+
+        imagePanel = new ImageCanvas(statusLabel);
+        seriesTree = new JTree(createEmptyTreeModel());
+        groupFilterCombo = new JComboBox<>();
 
         initTree();
         initComponents();
@@ -152,6 +157,17 @@ public class MainView extends JFrame {
 
         JPanel toolbar = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 6));
         toolbar.setBorder(BorderFactory.createEmptyBorder(6, 6, 6, 6));
+
+        JLabel minLabel = new JLabel("Мин. яркость:");
+        minBrightnessField.setToolTipText("Минимальное значение яркости (0-255)");
+
+        JLabel maxLabel = new JLabel("Макс. яркость:");
+        maxBrightnessField.setToolTipText("Максимальное значение яркости (0-255)");
+
+        toolbar.add(minLabel);
+        toolbar.add(minBrightnessField);
+        toolbar.add(maxLabel);
+        toolbar.add(maxBrightnessField);
         toolbar.add(groupFilterCombo);
 
         add(toolbar, BorderLayout.NORTH);
@@ -296,6 +312,22 @@ public class MainView extends JFrame {
         this.groupFilterListener = listener;
     }
 
+    public int getMinBrightnessThreshold() {
+        try {
+            return Integer.parseInt(minBrightnessField.getText().trim());
+        } catch (NumberFormatException e) {
+            return 0;
+        }
+    }
+
+    public int getMaxBrightnessThreshold() {
+        try {
+            return Integer.parseInt(maxBrightnessField.getText().trim());
+        } catch (NumberFormatException e) {
+            return 255;
+        }
+    }
+
     public void setSeriesSelectionListener(Consumer<SeriesTreeNodeData> listener) {
         this.seriesSelectionListener = listener;
     }
@@ -362,18 +394,98 @@ public class MainView extends JFrame {
 
     private static final class ImageCanvas extends JPanel {
         private BufferedImage image;
+        private Mat originalMat;
+        private final JLabel statusLabel;
 
-        private ImageCanvas() {
+        private ImageCanvas(JLabel statusLabel) {
+            this.statusLabel = statusLabel;
             setBackground(Color.LIGHT_GRAY);
+
+            addMouseMotionListener(new java.awt.event.MouseMotionAdapter() {
+                @Override
+                public void mouseMoved(java.awt.event.MouseEvent e) {
+                    if (originalMat == null || originalMat.empty()) {
+                        statusLabel.setText("Готов к работе");
+                        return;
+                    }
+
+                    int panelX = e.getX();
+                    int panelY = e.getY();
+
+                    int imgWidth = originalMat.cols();
+                    int imgHeight = originalMat.rows();
+
+                    if (imgWidth == 0 || imgHeight == 0) {
+                        statusLabel.setText("Готов к работе");
+                        return;
+                    }
+
+                    // Вычисляем масштаб отображения
+                    int canvasWidth = getWidth();
+                    int canvasHeight = getHeight();
+
+                    double scaleX = (double) canvasWidth / imgWidth;
+                    double scaleY = (double) canvasHeight / imgHeight;
+                    double scale = Math.min(scaleX, scaleY);
+
+                    int displayedWidth = (int) (imgWidth * scale);
+                    int displayedHeight = (int) (imgHeight * scale);
+
+                    int offsetX = (canvasWidth - displayedWidth) / 2;
+                    int offsetY = (canvasHeight - displayedHeight) / 2;
+
+                    // Проверяем, находится ли курсор над изображением
+                    if (panelX < offsetX || panelX > offsetX + displayedWidth ||
+                            panelY < offsetY || panelY > offsetY + displayedHeight) {
+                        statusLabel.setText("Готов к работе");
+                        return;
+                    }
+
+                    // Пересчитываем координаты в пиксели исходного изображения
+                    int pixelX = (int) ((panelX - offsetX) / scale);
+                    int pixelY = (int) ((panelY - offsetY) / scale);
+
+                    pixelX = Math.max(0, Math.min(pixelX, imgWidth - 1));
+                    pixelY = Math.max(0, Math.min(pixelY, imgHeight - 1));
+
+                    // Получаем значение пикселя из оригинального Mat
+                    double[] pixelData = originalMat.get(pixelY, pixelX);
+
+                    if (pixelData != null) {
+                        if (originalMat.channels() == 1) {
+                            int brightness = (int) pixelData[0];
+                            statusLabel.setText(String.format("Пиксель[%d, %d]: яркость=%d", pixelX, pixelY, brightness));
+                        } else {
+                            int r = (int) pixelData[0];
+                            int g = (int) pixelData[1];
+                            int b = (int) pixelData[2];
+                            int brightness = (r + g + b) / 3;
+                            statusLabel.setText(String.format("Пиксель[%d, %d]: R=%d, G=%d, B=%d, яркость=~%d",
+                                    pixelX, pixelY, r, g, b, brightness));
+                        }
+                    } else {
+                        statusLabel.setText("Готов к работе");
+                    }
+                }
+            });
+
+            addMouseListener(new java.awt.event.MouseAdapter() {
+                @Override
+                public void mouseExited(java.awt.event.MouseEvent e) {
+                    statusLabel.setText("Готов к работе");
+                }
+            });
         }
 
         private void setImage(Mat mat) {
             if (mat == null || mat.empty()) {
                 image = null;
+                originalMat = null;
                 repaint();
                 return;
             }
 
+            originalMat = mat;
             image = toBufferedImage(mat);
             repaint();
         }
@@ -410,15 +522,36 @@ public class MainView extends JFrame {
         @Override
         protected void paintComponent(Graphics g) {
             super.paintComponent(g);
-            if (image == null) {
+            if (image == null || originalMat == null) {
                 g.setColor(Color.GRAY);
                 g.drawString("Нет изображения", getWidth() / 2 - 50, getHeight() / 2);
                 return;
             }
 
-            int x = (getWidth() - image.getWidth()) / 2;
-            int y = (getHeight() - image.getHeight()) / 2;
-            g.drawImage(image, x, y, this);
+            int imgWidth = originalMat.cols();
+            int imgHeight = originalMat.rows();
+
+            if (imgWidth == 0 || imgHeight == 0) {
+                g.setColor(Color.GRAY);
+                g.drawString("Нет изображения", getWidth() / 2 - 50, getHeight() / 2);
+                return;
+            }
+
+            // Вычисляем масштаб отображения (так же как в обработчике мыши)
+            int canvasWidth = getWidth();
+            int canvasHeight = getHeight();
+
+            double scaleX = (double) canvasWidth / imgWidth;
+            double scaleY = (double) canvasHeight / imgHeight;
+            double scale = Math.min(scaleX, scaleY);
+
+            int displayedWidth = (int) (imgWidth * scale);
+            int displayedHeight = (int) (imgHeight * scale);
+
+            int offsetX = (canvasWidth - displayedWidth) / 2;
+            int offsetY = (canvasHeight - displayedHeight) / 2;
+
+            g.drawImage(image, offsetX, offsetY, displayedWidth, displayedHeight, this);
         }
     }
 }
