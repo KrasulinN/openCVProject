@@ -151,7 +151,7 @@ public class ImageController {
         }
     }
 
-    private void loadSeries(List<Path> paths) {
+    public void loadSeries(List<Path> paths) {
         if (paths == null || paths.isEmpty()) {
             return;
         }
@@ -175,7 +175,8 @@ public class ImageController {
             clearAllFilterStates();
             refreshSeriesBrowser();
             view.displayImage(null);
-            view.showError("Не удалось загрузить ни один снимок.");
+            // Не показываем ошибку при автозагрузке, если файлы не подходят
+            System.out.println("Не удалось загрузить ни один снимок из " + errors.size() + " файлов.");
             return;
         }
 
@@ -189,8 +190,11 @@ public class ImageController {
         refreshSeriesBrowser();
         selectFirstVisibleItem();
 
-        if (!errors.isEmpty()) {
+        if (!errors.isEmpty() && errors.size() < loadedItems.size()) {
+            // Показываем ошибку только если часть файлов загрузилась
             view.showError("Некоторые файлы не удалось загрузить:\n" + joinLines(errors));
+        } else if (!errors.isEmpty()) {
+            System.out.println("Некоторые файлы не загружены: " + errors.size() + " шт.");
         }
     }
 
@@ -613,5 +617,37 @@ public class ImageController {
         selectFirstVisibleItem();
         updateStatus("ROI-фильтр сброшен");
         return true;
+    }
+
+    public void onShow3DViewer() {
+        String selectedGroup = view.getSelectedGroupFilter();
+        if (selectedGroup == null || selectedGroup.isEmpty() || selectedGroup.equals("Все группы")) {
+            view.showError("Выберите группу снимков для 3D визуализации");
+            return;
+        }
+
+        List<SeriesImageItem> itemsInGroup = findItemsInGroup(selectedGroup);
+        if (itemsInGroup.isEmpty()) {
+            view.showError("В группе нет снимков");
+            return;
+        }
+
+        System.out.println("\n========== ЗАПУСК 3D ВИЗУАЛИЗАЦИИ ==========");
+        System.out.println("Группа: " + selectedGroup);
+        System.out.println("Количество слайсов: " + itemsInGroup.size());
+
+        // Проверяем, есть ли у слайсов данные о позиции
+        int slicesWithPosition = 0;
+        for (SeriesImageItem item : itemsInGroup) {
+            if (Double.isFinite(item.getSlicePositionMm())) {
+                slicesWithPosition++;
+            }
+        }
+        System.out.println("Слайсы с позицией: " + slicesWithPosition + "/" + itemsInGroup.size());
+
+        // Запускаем 3D viewer
+        org.example.view.PointCloud3DViewer.showViewer(itemsInGroup, "3D облако точек - " + selectedGroup);
+
+        updateStatus("3D визуализация запущена для " + itemsInGroup.size() + " слайсов");
     }
 }

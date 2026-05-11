@@ -1,6 +1,7 @@
 package org.example.view;
 
 import org.example.controller.ImageController;
+import org.example.model.SeriesImageItem;
 import org.example.model.SeriesTreeNodeData;
 import org.opencv.core.Mat;
 import org.opencv.core.Point;
@@ -40,6 +41,7 @@ public class MainView extends JFrame {
     private JMenuItem resetMenuItem;
     private JMenuItem contourInGroupMenuItem;
     private JMenuItem drawRoiMenuItem;
+    private JMenuItem show3DMenuItem;
 
     private DefaultTreeModel seriesTreeModel;
     private boolean updatingGroupFilter;
@@ -152,11 +154,16 @@ public class MainView extends JFrame {
         drawRoiMenuItem = new JMenuItem("Нарисовать ROI (многоугольник)");
         processMenu.add(drawRoiMenuItem);
 
+        JMenuItem show3DMenuItem = new JMenuItem("Показать 3D облако точек");
+        processMenu.add(show3DMenuItem);
+
         menuBar.add(fileMenu);
         menuBar.add(editMenu);
         menuBar.add(processMenu);
 
         setJMenuBar(menuBar);
+
+        this.show3DMenuItem = show3DMenuItem;
     }
 
     private void createToolbar() {
@@ -205,6 +212,7 @@ public class MainView extends JFrame {
         resetMenuItem.addActionListener(controller::onReset);
         contourInGroupMenuItem.addActionListener(controller::onApplyContourToGroup);
         drawRoiMenuItem.addActionListener(e -> enableRoiDrawingMode());
+        show3DMenuItem.addActionListener(e -> controller.onShow3DViewer());
 
         groupFilterCombo.addActionListener(e -> {
             if (!updatingGroupFilter && groupFilterListener != null) {
@@ -268,6 +276,37 @@ public class MainView extends JFrame {
         TreePath path = new TreePath(imageNode.getPath());
         seriesTree.setSelectionPath(path);
         seriesTree.scrollPathToVisible(path);
+    }
+
+    public void selectSeriesItem(SeriesImageItem item) {
+        if (seriesTreeModel == null || item == null) {
+            return;
+        }
+
+        DefaultMutableTreeNode root = (DefaultMutableTreeNode) seriesTreeModel.getRoot();
+        if (root == null) {
+            return;
+        }
+
+        // Ищем узел с данным элементом
+        for (int i = 0; i < root.getChildCount(); i++) {
+            DefaultMutableTreeNode groupNode = (DefaultMutableTreeNode) root.getChildAt(i);
+            for (int j = 0; j < groupNode.getChildCount(); j++) {
+                DefaultMutableTreeNode imageNode = (DefaultMutableTreeNode) groupNode.getChildAt(j);
+                if (imageNode.getUserObject() instanceof SeriesTreeNodeData) {
+                    SeriesTreeNodeData data = (SeriesTreeNodeData) imageNode.getUserObject();
+                    if (data.getItem() != null && data.getItem().equals(item)) {
+                        TreePath path = new TreePath(imageNode.getPath());
+                        seriesTree.setSelectionPath(path);
+                        seriesTree.scrollPathToVisible(path);
+                        return;
+                    }
+                }
+            }
+        }
+
+        // Если не нашли, выбираем первый элемент
+        selectFirstSeriesLeaf();
     }
 
     public void clearSeriesSelection() {
@@ -677,7 +716,7 @@ public class MainView extends JFrame {
                     polygon.lineTo(firstScreenX, firstScreenY);
                 }
 
-                // Рисуем линии ЯРКИМ ЗЕЛЕНЫМ цветом (толщина 2px)
+                // Рисуем линии ЯРКИМ КРАСНЫМ цветом (толщина 2px)
                 g2d.setColor(new Color(0, 255, 0)); // Чистый красный
                 g2d.setStroke(new BasicStroke(2.0f));
                 g2d.draw(polygon);

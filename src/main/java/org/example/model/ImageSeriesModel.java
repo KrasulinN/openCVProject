@@ -95,6 +95,10 @@ public class ImageSeriesModel {
         selectedItem = item;
     }
 
+    public SeriesImageItem getSelectedItem() {
+        return selectedItem;
+    }
+
     public void updateSelectedItemImage(Mat image) {
         if (selectedItem != null) {
             selectedItem.setImage(image);

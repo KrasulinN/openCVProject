@@ -11,6 +11,13 @@ import org.opencv.core.Size;
 import org.opencv.imgproc.Imgproc;
 
 import javax.swing.*;
+import java.io.File;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Random;
 
 public class Main {
@@ -28,15 +35,31 @@ public class Main {
         ImageModel model = new ImageModel();
         ImageSeriesModel seriesModel = new ImageSeriesModel();
         MainView view = new MainView();
-        new ImageController(model, seriesModel, view);
+        ImageController controller = new ImageController(model, seriesModel, view);
         SwingUtilities.invokeLater(() -> view.setVisible(true));
+
+        // Пытаемся автоматически загрузить папку D:\data
+        SwingUtilities.invokeLater(() -> {
+            Path defaultPath = Paths.get("D:\\data");
+            if (Files.exists(defaultPath) && Files.isDirectory(defaultPath)) {
+                try {
+                    List<Path> imagePaths = new ArrayList<>();
+                    Files.list(defaultPath)
+                            .filter(Files::isRegularFile)
+                            .forEach(imagePaths::add);
+
+                    if (!imagePaths.isEmpty()) {
+                        System.out.println("Автоматическая загрузка из: " + defaultPath);
+                        System.out.println("Найдено файлов: " + imagePaths.size());
+                        // Вызываем загрузку через контроллер
+                        controller.loadSeries(imagePaths);
+                    }
+                } catch (IOException e) {
+                    System.out.println("Не удалось прочитать папку D:\\ " + e.getMessage());
+                }
+            } else {
+                System.out.println("Папка D:\\data не найдена, работа продолжается без автозагрузки.");
+            }
+        });
     }
 }
-/*
-git status
-git checkout krasulin-develop
-git add .
-git commit -m ""
-git push -u origin krasulin-develop
-
- */
