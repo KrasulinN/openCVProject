@@ -311,15 +311,6 @@ public class ImageController {
         System.out.println("Порог яркости: [" + minBrightness + ", " + maxBrightness + "]");
         System.out.println("Количество снимков: " + itemsInGroup.size());
 
-        FilterBatch batch = model.createFilterBatch("Поиск контуров для " + selectedGroup);
-        ThresholdFilter thresholdFilter = new ThresholdFilter(minBrightness, maxBrightness);
-        thresholdFilter.setDebugMode(true); // Включаем режим отладки
-        batch.addFilter(thresholdFilter);
-
-        ContourFilter contourFilter = new ContourFilter();
-        contourFilter.setDebugMode(true); // Включаем режим отладки
-        batch.addFilter(contourFilter);
-
         // Применяем фильтры для создания маски
         for (int i = 0; i < itemsInGroup.size(); i++) {
             SeriesImageItem item = itemsInGroup.get(i);
@@ -327,26 +318,6 @@ public class ImageController {
                     ": " + item.getFileName() + " ---");
 
             Mat originalImage = item.getOriginalImage().clone();
-            Mat processed = originalImage.clone();
-
-            // Применяем пороговый фильтр для получения маски
-            for (org.example.filters.FilterStrategy filter : batch.getFilters()) {
-                processed = filter.apply(processed);
-            }
-
-            // Теперь processed содержит маску. Накладываем её на оригинальное изображение
-            MaskOverlayFilter overlayFilter = new MaskOverlayFilter(processed);
-            Mat result = overlayFilter.apply(originalImage);
-
-            // Освобождаем ресурсы
-            overlayFilter.release();
-            processed.release();
-            originalImage.release();
-
-            // Заменяем изображение в элементе на результат
-            item.getImage().release();
-
-            originalImage = item.getOriginalImage().clone();
             Mat lowerMask = new Mat();
             Mat upperMask = new Mat();
             Imgproc.threshold(originalImage, lowerMask, minBrightness, 255, Imgproc.THRESH_BINARY);
@@ -367,19 +338,19 @@ public class ImageController {
             Mat result5 = new Mat();
             Imgproc.morphologyEx(result4, openMask, Imgproc.MORPH_OPEN, kernel);
             Core.bitwise_and(result4, closeMask, result5);
+
+            // Заменяем изображение в элементе на результат
             item.setImage(result5);
         }
 
         System.out.println("\n========== ЗАВЕРШЕНИЕ ОБРАБОТКИ КОНТУРОВ ==========\n");
-
-        activeContourBatch = batch;
         activeContourGroupKey = selectedGroup;
         contourApplied = true;
         contourCanRedo = false;
 
         refreshSeriesBrowser();
         selectFirstVisibleItem();
-        updateStatus("Фильтр '" + batch.getName() + "' применен к " + itemsInGroup.size() + " снимкам (порог: [" + minBrightness + ", " + maxBrightness + "])");
+        updateStatus("Пороговый фильтр применен к " + itemsInGroup.size() + " снимкам (порог: [" + minBrightness + ", " + maxBrightness + "])");
     }
 
 
