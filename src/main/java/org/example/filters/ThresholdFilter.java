@@ -3,12 +3,14 @@ package org.example.filters;
 import org.opencv.core.Core;
 import org.opencv.core.Mat;
 import org.opencv.core.Scalar;
+import org.opencv.core.Size;
 import org.opencv.imgproc.Imgproc;
 
 /**
  * Фильтр, который применяет пороговую обработку по интенсивности пикселей.
- * Пиксели со значениями в диапазоне [minThreshold, maxThreshold] становятся белыми (255),
- * остальные - чёрными (0).
+ * Пиксели со значениями в диапазоне [minThreshold, maxThreshold] остаются с исходной яркостью,
+ * остальные становятся чёрными (0).
+ * Также применяется морфология (закрытие + открытие) к маске для очистки шума.
  */
 public class ThresholdFilter implements FilterStrategy {
 
@@ -58,25 +60,24 @@ public class ThresholdFilter implements FilterStrategy {
         }
 
         // Создаём бинарную маску
-        Mat result = Mat.zeros(gray.size(), gray.type());
+        Mat mask = Mat.zeros(gray.size(), gray.type());
 
         // Применяем пороговую фильтрацию: пиксели в диапазоне [min, max] -> 255, остальные -> 0
-        // Используем комбинацию двух порогов
         Mat lowerMask = new Mat();
-
         Mat upperMask = new Mat();
 
         Imgproc.threshold(gray, lowerMask, minThreshold, 255, Imgproc.THRESH_BINARY);
-       // Imgproc.thr
-        Imgproc.threshold(gray, upperMask, 0, maxThreshold, Imgproc.THRESH_BINARY_INV);
+        Imgproc.threshold(gray, upperMask, maxThreshold, 255, Imgproc.THRESH_BINARY_INV);
 
-        Core.bitwise_and(lowerMask, upperMask, result);
+        Mat result = new Mat();
+        Core.bitwise_and(lowerMask, upperMask, mask);
+        Core.bitwise_and(source, mask, result);
 
         if (debugMode) {
             // Статистика по маске
-            Scalar meanVal = Core.mean(result);
+            Scalar meanVal = Core.mean(mask);
             double whitePixels = meanVal.val[0];
-            double totalPixels = result.total();
+            double totalPixels = mask.total();
             double percent = (whitePixels / 255.0) * 100.0;
 
             System.out.println("[ThresholdFilter] Порог: [" + minThreshold + ", " + maxThreshold + "]");
@@ -85,16 +86,41 @@ public class ThresholdFilter implements FilterStrategy {
             System.out.println("[ThresholdFilter] Среднее значение маски: " + meanVal.val[0]);
         }
 
+        /*
+        // Применяем морфологию к маске: CLOSE затем OPEN
+        Mat kernel = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, new Size(3, 3));
+
+        Mat closeMask = new Mat();
+        Imgproc.morphologyEx(mask, closeMask, Imgproc.MORPH_CLOSE, kernel);
+
+        Mat openMask = new Mat();
+        Imgproc.morphologyEx(closeMask, openMask, Imgproc.MORPH_OPEN, kernel);
+
+        if (debugMode) {
+            System.out.println("[ThresholdFilter] Морфология применена к маске (CLOSE + OPEN, ядро 3x3)");
+        }
+
+        // Накладываем итоговую маску на исходное изображение
+        Mat result = new Mat();
+        Core.bitwise_and(source, source, result, openMask);
+
+         */
+
+        // Освобождаем память
         lowerMask.release();
         upperMask.release();
         gray.release();
+        mask.release();
+        //kernel.release();
+        //closeMask.release();
+        //openMask.release();
 
         return result;
     }
 
     @Override
     public String getName() {
-        return "Порог: [" + minThreshold + ", " + maxThreshold + "]";
+        return "Порог: [" + minThreshold + ", " + maxThreshold + "] + Морфология";
     }
 
     public int getMinThreshold() {

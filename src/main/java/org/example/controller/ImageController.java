@@ -1,9 +1,6 @@
 package org.example.controller;
 
-import org.example.filters.FilterBatch;
-import org.example.filters.ContourFilter;
-import org.example.filters.ThresholdFilter;
-import org.example.filters.MaskOverlayFilter;
+import org.example.filters.*;
 import org.example.model.ImageModel;
 import org.example.model.ImageSeriesModel;
 import org.example.model.SeriesImageItem;
@@ -12,6 +9,7 @@ import org.example.utils.DicomImageLoader;
 import org.example.view.MainView;
 import org.opencv.core.Core;
 import org.opencv.core.Mat;
+import org.opencv.core.Point;
 import org.opencv.imgcodecs.Imgcodecs;
 import org.opencv.imgproc.Imgproc;
 
@@ -28,23 +26,31 @@ public class ImageController {
     private final ImageModel model;
     private final ImageSeriesModel seriesModel;
     private final MainView view;
-    private FilterBatch activeContourBatch;
-    private String activeContourGroupKey;
-    private boolean contourApplied;
-    private boolean contourCanRedo;
+
+    // Состояние для пакетной обработки группой
+    private FilterBatch activeGroupFilterBatch;
+    private String activeGroupFilterKey;
+    private boolean groupFilterApplied;
+    private boolean groupFilterCanRedo;
+
+    // Состояние для ROI-фильтра (многоугольник)
+    private List<Point> roiPolygonPoints;
+    private String roiGroupKey;
+    private boolean roiApplied;
+    private boolean roiCanRedo;
 
     public ImageController(ImageModel model, ImageSeriesModel seriesModel, MainView view) {
         this.model = model;
         this.seriesModel = seriesModel;
         this.view = view;
-        this.activeContourBatch = null;
-        this.activeContourGroupKey = null;
-        this.contourApplied = false;
-        this.contourCanRedo = false;
+
+        clearGroupFilterState();
+        clearRoiState();
 
         this.view.setController(this);
         this.view.setGroupFilterListener(this::onGroupFilterChanged);
         this.view.setSeriesSelectionListener(this::onSeriesSelectionChanged);
+        this.view.setRoiCompleteListener(this::onRoiComplete);
     }
 
     public void onOpenFiles(ActionEvent e) {
@@ -96,7 +102,10 @@ public class ImageController {
     }
 
     public void onUndo(ActionEvent e) {
-        if (undoContourFilter()) {
+        if (undoRoiFilter()) {
+            return;
+        }
+        if (undoGroupFilter()) {
             return;
         }
 
@@ -110,7 +119,10 @@ public class ImageController {
     }
 
     public void onRedo(ActionEvent e) {
-        if (redoContourFilter()) {
+        if (redoRoiFilter()) {
+            return;
+        }
+        if (redoGroupFilter()) {
             return;
         }
 
@@ -124,7 +136,10 @@ public class ImageController {
     }
 
     public void onReset(ActionEvent e) {
-        if (resetContourFilter()) {
+        if (resetRoiFilter()) {
+            return;
+        }
+        if (resetGroupFilter()) {
             return;
         }
 
@@ -157,7 +172,7 @@ public class ImageController {
         if (loadedItems.isEmpty()) {
             model.clear();
             seriesModel.clear();
-            clearContourFilterState();
+            clearAllFilterStates();
             refreshSeriesBrowser();
             view.displayImage(null);
             view.showError("Не удалось загрузить ни один снимок.");
@@ -166,7 +181,7 @@ public class ImageController {
 
         String currentFilter = seriesModel.getGroupFilter();
         seriesModel.replaceItems(loadedItems);
-        clearContourFilterState();
+        clearAllFilterStates();
         if (currentFilter != null && seriesModel.findFirstItemInGroup(currentFilter) == null) {
             seriesModel.setGroupFilter(null);
         }
@@ -292,11 +307,9 @@ public class ImageController {
             return;
         }
 
-        // Получаем пороговые значения из полей ввода
         int minBrightness = view.getMinBrightnessThreshold();
         int maxBrightness = view.getMaxBrightnessThreshold();
 
-        // Валидация порогов
         if (minBrightness < 0 || minBrightness > 255 || maxBrightness < 0 || maxBrightness > 255) {
             view.showError("Значения яркости должны быть в диапазоне 0-255");
             return;
@@ -306,47 +319,45 @@ public class ImageController {
             return;
         }
 
-        System.out.println("\n========== НАЧАЛО ОБРАБОТКИ КОНТУРОВ ==========");
+        System.out.println("\n========== НАЧАЛО ОБРАБОТКИ ПОРОГОВЫМ ФИЛЬТРОМ ==========");
         System.out.println("Группа: " + selectedGroup);
         System.out.println("Порог яркости: [" + minBrightness + ", " + maxBrightness + "]");
         System.out.println("Количество снимков: " + itemsInGroup.size());
 
-        // Применяем фильтры для создания маски
+        // Создаём пакет фильтров: только пороговый (морфология уже внутри него)
+        FilterBatch batch = model.createFilterBatch("Пороговый фильтр для " + selectedGroup);
+
+        ThresholdFilter thresholdFilter = new ThresholdFilter(minBrightness, maxBrightness);
+        thresholdFilter.setDebugMode(true);
+        batch.addFilter(thresholdFilter);
+
+        // Применяем фильтры ко всем снимкам в группе
         for (int i = 0; i < itemsInGroup.size(); i++) {
             SeriesImageItem item = itemsInGroup.get(i);
             System.out.println("\n--- Обработка снимка " + (i + 1) + "/" + itemsInGroup.size() +
                     ": " + item.getFileName() + " ---");
 
             Mat originalImage = item.getOriginalImage().clone();
-            Mat lowerMask = new Mat();
-            Mat upperMask = new Mat();
-            Imgproc.threshold(originalImage, lowerMask, minBrightness, 255, Imgproc.THRESH_BINARY);
-            Imgproc.threshold(originalImage, upperMask, maxBrightness, 255, Imgproc.THRESH_BINARY_INV);
-            Mat result2 = new Mat();
-            Core.bitwise_and(lowerMask, upperMask, result2);
-            Mat result3 = new Mat();
-            Core.bitwise_and(originalImage, result2, result3);
+            Mat processed = originalImage.clone();
 
-            Mat kernel = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, new org.opencv.core.Size(3, 3));
+            // Применяем все фильтры из пакета последовательно
+            for (FilterStrategy filter : batch.getFilters()) {
+                Mat filtered = filter.apply(processed);
+                processed.release();
+                processed = filtered;
+            }
 
-            Mat closeMask = new Mat();
-            Mat result4 = new Mat();
-            Imgproc.morphologyEx(result3, closeMask, Imgproc.MORPH_CLOSE, kernel);
-            Core.bitwise_and(result3, closeMask, result4);
-
-            Mat openMask = new Mat();
-            Mat result5 = new Mat();
-            Imgproc.morphologyEx(result4, openMask, Imgproc.MORPH_OPEN, kernel);
-            Core.bitwise_and(result4, closeMask, result5);
-
-            // Заменяем изображение в элементе на результат
-            item.setImage(result5);
+            // Сохраняем результат
+            item.setImage(processed);
+            originalImage.release();
         }
 
-        System.out.println("\n========== ЗАВЕРШЕНИЕ ОБРАБОТКИ КОНТУРОВ ==========\n");
-        activeContourGroupKey = selectedGroup;
-        contourApplied = true;
-        contourCanRedo = false;
+        System.out.println("\n========== ЗАВЕРШЕНИЕ ОБРАБОТКИ ПОРОГОВЫМ ФИЛЬТРОМ ==========\n");
+
+        activeGroupFilterBatch = batch;
+        activeGroupFilterKey = selectedGroup;
+        groupFilterApplied = true;
+        groupFilterCanRedo = false;
 
         refreshSeriesBrowser();
         selectFirstVisibleItem();
@@ -365,67 +376,242 @@ public class ImageController {
         return itemsInGroup;
     }
 
-    private void clearContourFilterState() {
-        activeContourBatch = null;
-        activeContourGroupKey = null;
-        contourApplied = false;
-        contourCanRedo = false;
+    private void clearGroupFilterState() {
+        activeGroupFilterBatch = null;
+        activeGroupFilterKey = null;
+        groupFilterApplied = false;
+        groupFilterCanRedo = false;
     }
 
-    private boolean undoContourFilter() {
-        if (!contourApplied || activeContourBatch == null || activeContourGroupKey == null) {
+    private void clearRoiState() {
+        roiPolygonPoints = null;
+        roiGroupKey = null;
+        roiApplied = false;
+        roiCanRedo = false;
+    }
+
+    private void clearAllFilterStates() {
+        clearGroupFilterState();
+        clearRoiState();
+    }
+
+    private boolean undoGroupFilter() {
+        if (!groupFilterApplied || activeGroupFilterBatch == null || activeGroupFilterKey == null) {
             return false;
         }
 
-        List<SeriesImageItem> itemsInGroup = findItemsInGroup(activeContourGroupKey);
+        List<SeriesImageItem> itemsInGroup = findItemsInGroup(activeGroupFilterKey);
         if (itemsInGroup.isEmpty()) {
-            clearContourFilterState();
+            clearGroupFilterState();
             return false;
         }
 
-        activeContourBatch.removeFromItems(itemsInGroup);
-        contourApplied = false;
-        contourCanRedo = true;
+        activeGroupFilterBatch.removeFromItems(itemsInGroup);
+        groupFilterApplied = false;
+        groupFilterCanRedo = true;
         refreshSeriesBrowser();
         selectFirstVisibleItem();
         updateStatus("Фильтр группы отменен");
         return true;
     }
 
-    private boolean redoContourFilter() {
-        if (contourApplied || !contourCanRedo || activeContourBatch == null || activeContourGroupKey == null) {
+    private boolean redoGroupFilter() {
+        if (groupFilterApplied || !groupFilterCanRedo || activeGroupFilterBatch == null || activeGroupFilterKey == null) {
             return false;
         }
 
-        List<SeriesImageItem> itemsInGroup = findItemsInGroup(activeContourGroupKey);
+        List<SeriesImageItem> itemsInGroup = findItemsInGroup(activeGroupFilterKey);
         if (itemsInGroup.isEmpty()) {
-            clearContourFilterState();
+            clearGroupFilterState();
             return false;
         }
 
-        activeContourBatch.applyToItems(itemsInGroup);
-        contourApplied = true;
-        contourCanRedo = false;
+        activeGroupFilterBatch.applyToItems(itemsInGroup);
+        groupFilterApplied = true;
+        groupFilterCanRedo = false;
         refreshSeriesBrowser();
         selectFirstVisibleItem();
         updateStatus("Фильтр группы восстановлен");
         return true;
     }
 
-    private boolean resetContourFilter() {
-        if (activeContourBatch == null || activeContourGroupKey == null) {
+    private boolean resetGroupFilter() {
+        if (activeGroupFilterBatch == null || activeGroupFilterKey == null) {
             return false;
         }
 
-        List<SeriesImageItem> itemsInGroup = findItemsInGroup(activeContourGroupKey);
+        List<SeriesImageItem> itemsInGroup = findItemsInGroup(activeGroupFilterKey);
         if (!itemsInGroup.isEmpty()) {
-            activeContourBatch.removeFromItems(itemsInGroup);
+            activeGroupFilterBatch.removeFromItems(itemsInGroup);
         }
 
-        clearContourFilterState();
+        clearGroupFilterState();
         refreshSeriesBrowser();
         selectFirstVisibleItem();
         updateStatus("Фильтр группы сброшен");
+        return true;
+    }
+
+    private boolean undoRoiFilter() {
+        if (!roiApplied || roiPolygonPoints == null || roiGroupKey == null) {
+            return false;
+        }
+
+        List<SeriesImageItem> itemsInGroup = findItemsInGroup(roiGroupKey);
+        if (itemsInGroup.isEmpty()) {
+            clearRoiState();
+            return false;
+        }
+
+        // Отменяем ROI-фильтр: восстанавливаем состояние до применения ROI
+        // Т.е. возвращаемся к состоянию после порогового фильтра (или к оригиналу, если пороговый не применялся)
+        for (SeriesImageItem item : itemsInGroup) {
+            // Если есть активный групповой фильтр, то восстанавливаем его результат
+            // Иначе сбрасываем к оригиналу
+            if (groupFilterApplied && activeGroupFilterBatch != null && activeGroupFilterKey != null) {
+                // Восстанавливаем состояние после порогового фильтра
+                // Для этого нужно переapplyить только пороговый фильтр
+                Mat originalImage = item.getOriginalImage().clone();
+                Mat processed = originalImage.clone();
+
+                // Применяем только фильтры из batch (пороговый + морфология)
+                for (FilterStrategy filter : activeGroupFilterBatch.getFilters()) {
+                    Mat filtered = filter.apply(processed);
+                    processed.release();
+                    processed = filtered;
+                }
+
+                item.setImage(processed);
+                originalImage.release();
+            } else {
+                // Если пороговый фильтр не применён, сбрасываем к оригиналу
+                if (item.hasOriginalImage()) {
+                    item.resetToOriginal();
+                }
+            }
+        }
+
+        roiApplied = false;
+        roiCanRedo = true;
+        refreshSeriesBrowser();
+        selectFirstVisibleItem();
+        updateStatus("ROI-фильтр отменен");
+        return true;
+    }
+
+    private boolean redoRoiFilter() {
+        if (roiApplied || !roiCanRedo || roiPolygonPoints == null || roiGroupKey == null) {
+            return false;
+        }
+
+        List<SeriesImageItem> itemsInGroup = findItemsInGroup(roiGroupKey);
+        if (itemsInGroup.isEmpty()) {
+            clearRoiState();
+            return false;
+        }
+
+        // Восстанавливаем ROI-фильтр: применяем его к текущему состоянию
+        // Если применён пороговый фильтр, то ROI применяется поверх него
+        PolygonRoiFilter roiFilter = new PolygonRoiFilter(roiPolygonPoints);
+        for (SeriesImageItem item : itemsInGroup) {
+            // Берём текущее изображение (уже обработанное пороговым фильтром, если он был применён)
+            Mat currentImage = item.getImage().clone();
+            Mat result = roiFilter.apply(currentImage);
+            item.setImage(result);
+            currentImage.release();
+        }
+
+        roiApplied = true;
+        roiCanRedo = false;
+        refreshSeriesBrowser();
+        selectFirstVisibleItem();
+        updateStatus("ROI-фильтр восстановлен");
+        return true;
+    }
+
+    public void onRoiComplete(List<Point> polygonPoints, String groupKey) {
+        if (polygonPoints == null || polygonPoints.size() < 3) {
+            view.showError("Многоугольник должен иметь минимум 3 вершины");
+            return;
+        }
+
+        List<SeriesImageItem> itemsInGroup = findItemsInGroup(groupKey);
+        if (itemsInGroup.isEmpty()) {
+            view.showError("В группе нет снимков");
+            return;
+        }
+
+        System.out.println("\n========== НАЧАЛО ОБРАБОТКИ ROI-ФИЛЬТРОМ ==========");
+        System.out.println("Группа: " + groupKey);
+        System.out.println("Вершин многоугольника: " + polygonPoints.size());
+        System.out.println("Количество снимков: " + itemsInGroup.size());
+
+        // Применяем ROI-фильтр ко всем снимкам в группе
+        // ВАЖНО: ROI-фильтр применяется к ТЕКУЩЕМУ состоянию изображения (после порогового фильтра, если он был применён)
+        PolygonRoiFilter roiFilter = new PolygonRoiFilter(polygonPoints);
+        roiFilter.setDebugMode(true);
+
+        for (int i = 0; i < itemsInGroup.size(); i++) {
+            SeriesImageItem item = itemsInGroup.get(i);
+            System.out.println("\n--- Обработка снимка " + (i + 1) + "/" + itemsInGroup.size() +
+                    ": " + item.getFileName() + " ---");
+
+            // Берём текущее изображение (уже обработанное пороговым фильтром, если он был применён)
+            Mat currentImage = item.getImage().clone();
+            Mat result = roiFilter.apply(currentImage);
+
+            item.setImage(result);
+            currentImage.release();
+        }
+
+        System.out.println("\n========== ЗАВЕРШЕНИЕ ОБРАБОТКИ ROI-ФИЛЬТРОМ ==========\n");
+
+        this.roiPolygonPoints = new ArrayList<>(polygonPoints);
+        this.roiGroupKey = groupKey;
+        this.roiApplied = true;
+        this.roiCanRedo = false;
+
+        refreshSeriesBrowser();
+        selectFirstVisibleItem();
+        updateStatus("ROI-фильтр применен к " + itemsInGroup.size() + " снимкам (" + polygonPoints.size() + " вершин)");
+    }
+
+    private boolean resetRoiFilter() {
+        if (roiPolygonPoints == null || roiGroupKey == null) {
+            return false;
+        }
+
+        List<SeriesImageItem> itemsInGroup = findItemsInGroup(roiGroupKey);
+        if (!itemsInGroup.isEmpty()) {
+            // Сбрасываем ROI-фильтр: восстанавливаем состояние до применения ROI
+            // Т.е. возвращаемся к состоянию после порогового фильтра (или к оригиналу, если пороговый не применялся)
+            for (SeriesImageItem item : itemsInGroup) {
+                if (groupFilterApplied && activeGroupFilterBatch != null && activeGroupFilterKey != null) {
+                    // Восстанавливаем состояние после порогового фильтра
+                    Mat originalImage = item.getOriginalImage().clone();
+                    Mat processed = originalImage.clone();
+
+                    for (FilterStrategy filter : activeGroupFilterBatch.getFilters()) {
+                        Mat filtered = filter.apply(processed);
+                        processed.release();
+                        processed = filtered;
+                    }
+
+                    item.setImage(processed);
+                    originalImage.release();
+                } else {
+                    // Если пороговый фильтр не применён, сбрасываем к оригиналу
+                    if (item.hasOriginalImage()) {
+                        item.resetToOriginal();
+                    }
+                }
+            }
+        }
+
+        clearRoiState();
+        refreshSeriesBrowser();
+        selectFirstVisibleItem();
+        updateStatus("ROI-фильтр сброшен");
         return true;
     }
 }

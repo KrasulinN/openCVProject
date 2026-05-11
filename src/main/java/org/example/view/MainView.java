@@ -3,6 +3,7 @@ package org.example.view;
 import org.example.controller.ImageController;
 import org.example.model.SeriesTreeNodeData;
 import org.opencv.core.Mat;
+import org.opencv.core.Point;
 import org.opencv.imgproc.Imgproc;
 
 import javax.swing.*;
@@ -19,6 +20,7 @@ import java.awt.image.BufferedImage;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 
 public class MainView extends JFrame {
@@ -37,11 +39,13 @@ public class MainView extends JFrame {
     private JMenuItem redoMenuItem;
     private JMenuItem resetMenuItem;
     private JMenuItem contourInGroupMenuItem;
+    private JMenuItem drawRoiMenuItem;
 
     private DefaultTreeModel seriesTreeModel;
     private boolean updatingGroupFilter;
     private Consumer<String> groupFilterListener;
     private Consumer<SeriesTreeNodeData> seriesSelectionListener;
+    private BiConsumer<List<Point>, String> roiCompleteListener;
 
     public MainView() {
         setTitle("Medical Image Editor");
@@ -145,6 +149,9 @@ public class MainView extends JFrame {
         contourInGroupMenuItem = new JMenuItem("Поиск контуров в группе");
         processMenu.add(contourInGroupMenuItem);
 
+        drawRoiMenuItem = new JMenuItem("Нарисовать ROI (многоугольник)");
+        processMenu.add(drawRoiMenuItem);
+
         menuBar.add(fileMenu);
         menuBar.add(editMenu);
         menuBar.add(processMenu);
@@ -197,6 +204,7 @@ public class MainView extends JFrame {
         redoMenuItem.addActionListener(controller::onRedo);
         resetMenuItem.addActionListener(controller::onReset);
         contourInGroupMenuItem.addActionListener(controller::onApplyContourToGroup);
+        drawRoiMenuItem.addActionListener(e -> enableRoiDrawingMode());
 
         groupFilterCombo.addActionListener(e -> {
             if (!updatingGroupFilter && groupFilterListener != null) {
@@ -332,6 +340,14 @@ public class MainView extends JFrame {
         this.seriesSelectionListener = listener;
     }
 
+    public void setRoiCompleteListener(BiConsumer<List<Point>, String> listener) {
+        this.roiCompleteListener = listener;
+    }
+
+    private void enableRoiDrawingMode() {
+        imagePanel.enableRoiDrawing(roiCompleteListener, getSelectedGroupFilter());
+    }
+
     public void updateStatus(String message) {
         statusLabel.setText(message);
     }
@@ -397,9 +413,18 @@ public class MainView extends JFrame {
         private Mat originalMat;
         private final JLabel statusLabel;
 
+        // ROI drawing state
+        private boolean roiDrawingMode;
+        private List<Point> roiPoints;
+        private BiConsumer<List<Point>, String> roiCallback;
+        private String currentGroupKey;
+
         private ImageCanvas(JLabel statusLabel) {
             this.statusLabel = statusLabel;
             setBackground(Color.LIGHT_GRAY);
+
+            roiDrawingMode = false;
+            roiPoints = new ArrayList<>();
 
             addMouseMotionListener(new java.awt.event.MouseMotionAdapter() {
                 @Override
@@ -474,7 +499,79 @@ public class MainView extends JFrame {
                 public void mouseExited(java.awt.event.MouseEvent e) {
                     statusLabel.setText("Готов к работе");
                 }
+
+                @Override
+                public void mouseClicked(java.awt.event.MouseEvent e) {
+                    if (!roiDrawingMode || originalMat == null || originalMat.empty()) {
+                        return;
+                    }
+
+                    int panelX = e.getX();
+                    int panelY = e.getY();
+
+                    int imgWidth = originalMat.cols();
+                    int imgHeight = originalMat.rows();
+
+                    int canvasWidth = getWidth();
+                    int canvasHeight = getHeight();
+
+                    double scaleX = (double) canvasWidth / imgWidth;
+                    double scaleY = (double) canvasHeight / imgHeight;
+                    double scale = Math.min(scaleX, scaleY);
+
+                    int displayedWidth = (int) (imgWidth * scale);
+                    int displayedHeight = (int) (imgHeight * scale);
+
+                    int offsetX = (canvasWidth - displayedWidth) / 2;
+                    int offsetY = (canvasHeight - displayedHeight) / 2;
+
+                    if (panelX < offsetX || panelX > offsetX + displayedWidth ||
+                            panelY < offsetY || panelY > offsetY + displayedHeight) {
+                        return;
+                    }
+
+                    int pixelX = (int) ((panelX - offsetX) / scale);
+                    int pixelY = (int) ((panelY - offsetY) / scale);
+
+                    pixelX = Math.max(0, Math.min(pixelX, imgWidth - 1));
+                    pixelY = Math.max(0, Math.min(pixelY, imgHeight - 1));
+
+                    Point point = new Point(pixelX, pixelY);
+
+                    if (e.getButton() == java.awt.event.MouseEvent.BUTTON1) {
+                        // Левая кнопка - добавляем вершину
+                        roiPoints.add(point);
+                        statusLabel.setText("Добавлена вершина " + roiPoints.size() + ": [" + pixelX + ", " + pixelY + "]");
+                        repaint();
+                    } else if (e.getButton() == java.awt.event.MouseEvent.BUTTON3) {
+                        // Правая кнопка - завершаем многоугольник
+                        if (roiPoints.size() >= 3) {
+                            roiDrawingMode = false;
+                            statusLabel.setText("ROI-многоугольник завершён (" + roiPoints.size() + " вершин)");
+                            if (roiCallback != null) {
+                                roiCallback.accept(new ArrayList<>(roiPoints), currentGroupKey);
+                            }
+                            roiPoints.clear();
+                            repaint();
+                        } else {
+                            statusLabel.setText("Нужно минимум 3 вершины!");
+                        }
+                    }
+                }
             });
+        }
+
+        public void enableRoiDrawing(BiConsumer<List<Point>, String> callback, String groupKey) {
+            if (originalMat == null || originalMat.empty()) {
+                JOptionPane.showMessageDialog(this, "Сначала загрузите изображение", "Ошибка", JOptionPane.WARNING_MESSAGE);
+                return;
+            }
+            roiDrawingMode = true;
+            roiPoints.clear();
+            roiCallback = callback;
+            currentGroupKey = groupKey;
+            statusLabel.setText("Режим рисования ROI: ЛКМ - добавить вершину, ПКМ - завершить");
+            repaint();
         }
 
         private void setImage(Mat mat) {
@@ -552,6 +649,51 @@ public class MainView extends JFrame {
             int offsetY = (canvasHeight - displayedHeight) / 2;
 
             g.drawImage(image, offsetX, offsetY, displayedWidth, displayedHeight, this);
+
+            // Рисуем ROI-многоугольник, если включён режим рисования
+            if (roiDrawingMode && !roiPoints.isEmpty()) {
+                Graphics2D g2d = (Graphics2D) g.create();
+                g2d.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+
+                // Масштабируем координаты точек под размер отображения
+                java.awt.geom.Path2D.Double polygon = new java.awt.geom.Path2D.Double();
+                for (int i = 0; i < roiPoints.size(); i++) {
+                    Point p = roiPoints.get(i);
+                    int screenX = offsetX + (int) (p.x * scale);
+                    int screenY = offsetY + (int) (p.y * scale);
+
+                    if (i == 0) {
+                        polygon.moveTo(screenX, screenY);
+                    } else {
+                        polygon.lineTo(screenX, screenY);
+                    }
+                }
+
+                // Если есть больше 2 точек, рисуем замыкающую линию к первой точке
+                if (roiPoints.size() > 2) {
+                    Point firstP = roiPoints.get(0);
+                    int firstScreenX = offsetX + (int) (firstP.x * scale);
+                    int firstScreenY = offsetY + (int) (firstP.y * scale);
+                    polygon.lineTo(firstScreenX, firstScreenY);
+                }
+
+                // Рисуем линии ЯРКИМ ЗЕЛЕНЫМ цветом (толщина 2px)
+                g2d.setColor(new Color(0, 255, 0)); // Чистый красный
+                g2d.setStroke(new BasicStroke(2.0f));
+                g2d.draw(polygon);
+
+                // Рисуем точки вершин
+                g2d.setColor(new Color(0, 255, 0));
+                g2d.fillOval(offsetX + (int) (roiPoints.get(0).x * scale) - 4,
+                        offsetY + (int) (roiPoints.get(0).y * scale) - 4, 8, 8);
+                for (int i = 1; i < roiPoints.size(); i++) {
+                    Point p = roiPoints.get(i);
+                    g2d.fillOval(offsetX + (int) (p.x * scale) - 4,
+                            offsetY + (int) (p.y * scale) - 4, 8, 8);
+                }
+
+                g2d.dispose();
+            }
         }
     }
 }
