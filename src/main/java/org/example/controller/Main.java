@@ -38,9 +38,9 @@ public class Main {
         ImageController controller = new ImageController(model, seriesModel, view);
         SwingUtilities.invokeLater(() -> view.setVisible(true));
 
-        // Пытаемся автоматически загрузить папку D:\data
+        // Пытаемся автоматически загрузить папку data из корня проекта
         SwingUtilities.invokeLater(() -> {
-            Path defaultPath = Paths.get("D:\\data");
+            Path defaultPath = Paths.get("data").toAbsolutePath().normalize();
             if (Files.exists(defaultPath) && Files.isDirectory(defaultPath)) {
                 try {
                     List<Path> imagePaths = new ArrayList<>();
@@ -55,10 +55,10 @@ public class Main {
                         controller.loadSeries(imagePaths);
                     }
                 } catch (IOException e) {
-                    System.out.println("Не удалось прочитать папку D:\\ " + e.getMessage());
+                    System.out.println("Не удалось прочитать папку " + defaultPath + ": " + e.getMessage());
                 }
             } else {
-                System.out.println("Папка D:\\data не найдена, работа продолжается без автозагрузки.");
+                System.out.println("Папка " + defaultPath + " не найдена, работа продолжается без автозагрузки.");
             }
         });
     }
