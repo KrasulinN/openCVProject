@@ -1,7 +1,8 @@
 package org.example.model;
 
+import org.example.filters.FilterBatch;
 import org.opencv.core.Mat;
-import org.opencv.imgproc.Imgproc;
+
 import java.util.Stack;
 
 public class ImageModel {
@@ -24,41 +25,15 @@ public class ImageModel {
         undoStack.push(image.clone());
     }
 
-    public void applyFilter(FilterType filter) {
-        if (currentImage == null) return;
-
-        // Проверка для конкретных фильтров
-        if (filter == FilterType.GRAY && currentImage.channels() == 1) {
-            return; // уже черно-белое
-        }
-
-        // Сохраняем состояние для undo
-        if (!isLoadingFromHistory) {
-            saveStateForUndo();
-        }
-
-        Mat result = new Mat();
-
-        switch (filter) {
-            case GRAY:
-                Imgproc.cvtColor(currentImage, result, Imgproc.COLOR_BGR2GRAY);
-                break;
-            case BLUR:
-                Imgproc.GaussianBlur(currentImage, result, new org.opencv.core.Size(15, 15), 0);
-                break;
-            default:
-                result = currentImage.clone();
-        }
-
-        currentImage = result;
+    public void clear() {
+        currentImage = null;
+        undoStack.clear();
+        redoStack.clear();
+        isLoadingFromHistory = false;
     }
 
-    private void saveStateForUndo() {
-        if (isLoadingFromHistory || currentImage == null) return;
-
-        Mat copy = currentImage.clone();
-        undoStack.push(copy);
-        redoStack.clear();
+    public FilterBatch createFilterBatch(String name) {
+        return new FilterBatch(name);
     }
 
     public boolean undo() {
