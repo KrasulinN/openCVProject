@@ -210,6 +210,9 @@ public class ImageController {
         double slicePositionMm = seriesInfo != null
                 ? seriesInfo.getSliceSortPositionMm()
                 : Double.NaN;
+        double[] pixelSpacing = seriesInfo != null
+                ? seriesInfo.getPixelSpacing()
+                : null;
 
         Mat image = Imgcodecs.imread(path.toString());
 
@@ -225,7 +228,7 @@ public class ImageController {
             return null;
         }
 
-        return new SeriesImageItem(path, groupKey, slicePositionMm, image);
+        return new SeriesImageItem(path, groupKey, slicePositionMm, pixelSpacing, image);
     }
 
     private List<Path> collectFolderFiles(Path folder) {
@@ -311,6 +314,9 @@ public class ImageController {
             return;
         }
 
+        // Сохраняем текущий выбранный элемент для восстановления после обработки
+        SeriesImageItem previouslySelectedItem = seriesModel.getSelectedItem();
+
         int minBrightness = view.getMinBrightnessThreshold();
         int maxBrightness = view.getMaxBrightnessThreshold();
 
@@ -364,7 +370,9 @@ public class ImageController {
         groupFilterCanRedo = false;
 
         refreshSeriesBrowser();
-        selectFirstVisibleItem();
+
+        // Восстанавливаем выделение на том же слайсе или ближайшем видимом
+        restoreSelectionAfterProcessing(previouslySelectedItem, selectedGroup);
         updateStatus("Пороговый фильтр применен к " + itemsInGroup.size() + " снимкам (порог: [" + minBrightness + ", " + maxBrightness + "])");
     }
 
@@ -387,6 +395,34 @@ public class ImageController {
         groupFilterCanRedo = false;
     }
 
+    /**
+     * Восстанавливает выделение слайда после обработки.
+     * Если ранее выбранный элемент всё ещё видим в группе, выбирает его.
+     * Иначе выбирает первый видимый элемент в группе.
+     */
+    private void restoreSelectionAfterProcessing(SeriesImageItem previouslySelectedItem, String selectedGroup) {
+        if (previouslySelectedItem != null &&
+                selectedGroup.equals(previouslySelectedItem.getGroupKey())) {
+            // Проверяем, что элемент всё ещё в группе и видим
+            List<SeriesImageItem> itemsInGroup = findItemsInGroup(selectedGroup);
+            for (SeriesImageItem item : itemsInGroup) {
+                if (item.equals(previouslySelectedItem)) {
+                    // Элемент найден, восстанавливаем выделение
+                    seriesModel.setSelectedItem(item);
+                    view.selectSeriesItem(item);
+
+                    // Обновляем изображение в модели и отображении
+                    model.loadImage(item.getImage());
+                    view.displayImage(model.getCurrentImage());
+                    return;
+                }
+            }
+        }
+
+        // Если не нашли ранее выбранный элемент, выбираем первый видимый
+        selectFirstVisibleItem();
+    }
+
     private void clearRoiState() {
         roiPolygonPoints = null;
         roiGroupKey = null;
@@ -404,6 +440,9 @@ public class ImageController {
             return false;
         }
 
+        // Сохраняем текущий выбранный элемент для восстановления после отмены
+        SeriesImageItem previouslySelectedItem = seriesModel.getSelectedItem();
+
         List<SeriesImageItem> itemsInGroup = findItemsInGroup(activeGroupFilterKey);
         if (itemsInGroup.isEmpty()) {
             clearGroupFilterState();
@@ -414,7 +453,9 @@ public class ImageController {
         groupFilterApplied = false;
         groupFilterCanRedo = true;
         refreshSeriesBrowser();
-        selectFirstVisibleItem();
+
+        // Восстанавливаем выделение на том же слайсе или ближайшем видимом
+        restoreSelectionAfterProcessing(previouslySelectedItem, activeGroupFilterKey);
         updateStatus("Фильтр группы отменен");
         return true;
     }
@@ -423,6 +464,9 @@ public class ImageController {
         if (groupFilterApplied || !groupFilterCanRedo || activeGroupFilterBatch == null || activeGroupFilterKey == null) {
             return false;
         }
+
+        // Сохраняем текущий выбранный элемент для восстановления после повтора
+        SeriesImageItem previouslySelectedItem = seriesModel.getSelectedItem();
 
         List<SeriesImageItem> itemsInGroup = findItemsInGroup(activeGroupFilterKey);
         if (itemsInGroup.isEmpty()) {
@@ -434,7 +478,9 @@ public class ImageController {
         groupFilterApplied = true;
         groupFilterCanRedo = false;
         refreshSeriesBrowser();
-        selectFirstVisibleItem();
+
+        // Восстанавливаем выделение на том же слайсе или ближайшем видимом
+        restoreSelectionAfterProcessing(previouslySelectedItem, activeGroupFilterKey);
         updateStatus("Фильтр группы восстановлен");
         return true;
     }
@@ -444,6 +490,9 @@ public class ImageController {
             return false;
         }
 
+        // Сохраняем текущий выбранный элемент для восстановления после сброса
+        SeriesImageItem previouslySelectedItem = seriesModel.getSelectedItem();
+
         List<SeriesImageItem> itemsInGroup = findItemsInGroup(activeGroupFilterKey);
         if (!itemsInGroup.isEmpty()) {
             activeGroupFilterBatch.removeFromItems(itemsInGroup);
@@ -451,7 +500,9 @@ public class ImageController {
 
         clearGroupFilterState();
         refreshSeriesBrowser();
-        selectFirstVisibleItem();
+
+        // Восстанавливаем выделение на том же слайсе или ближайшем видимом
+        restoreSelectionAfterProcessing(previouslySelectedItem, activeGroupFilterKey);
         updateStatus("Фильтр группы сброшен");
         return true;
     }
@@ -460,6 +511,9 @@ public class ImageController {
         if (!roiApplied || roiPolygonPoints == null || roiGroupKey == null) {
             return false;
         }
+
+        // Сохраняем текущий выбранный элемент для восстановления после отмены
+        SeriesImageItem previouslySelectedItem = seriesModel.getSelectedItem();
 
         List<SeriesImageItem> itemsInGroup = findItemsInGroup(roiGroupKey);
         if (itemsInGroup.isEmpty()) {
@@ -498,7 +552,9 @@ public class ImageController {
         roiApplied = false;
         roiCanRedo = true;
         refreshSeriesBrowser();
-        selectFirstVisibleItem();
+
+        // Восстанавливаем выделение на том же слайсе или ближайшем видимом
+        restoreSelectionAfterProcessing(previouslySelectedItem, roiGroupKey);
         updateStatus("ROI-фильтр отменен");
         return true;
     }
@@ -507,6 +563,9 @@ public class ImageController {
         if (roiApplied || !roiCanRedo || roiPolygonPoints == null || roiGroupKey == null) {
             return false;
         }
+
+        // Сохраняем текущий выбранный элемент для восстановления после повтора
+        SeriesImageItem previouslySelectedItem = seriesModel.getSelectedItem();
 
         List<SeriesImageItem> itemsInGroup = findItemsInGroup(roiGroupKey);
         if (itemsInGroup.isEmpty()) {
@@ -528,7 +587,9 @@ public class ImageController {
         roiApplied = true;
         roiCanRedo = false;
         refreshSeriesBrowser();
-        selectFirstVisibleItem();
+
+        // Восстанавливаем выделение на том же слайсе или ближайшем видимом
+        restoreSelectionAfterProcessing(previouslySelectedItem, roiGroupKey);
         updateStatus("ROI-фильтр восстановлен");
         return true;
     }
@@ -538,6 +599,9 @@ public class ImageController {
             view.showError("Многоугольник должен иметь минимум 3 вершины");
             return;
         }
+
+        // Сохраняем текущий выбранный элемент для восстановления после обработки
+        SeriesImageItem previouslySelectedItem = seriesModel.getSelectedItem();
 
         List<SeriesImageItem> itemsInGroup = findItemsInGroup(groupKey);
         if (itemsInGroup.isEmpty()) {
@@ -576,7 +640,9 @@ public class ImageController {
         this.roiCanRedo = false;
 
         refreshSeriesBrowser();
-        selectFirstVisibleItem();
+
+        // Восстанавливаем выделение на том же слайсе или ближайшем видимом
+        restoreSelectionAfterProcessing(previouslySelectedItem, groupKey);
         updateStatus("ROI-фильтр применен к " + itemsInGroup.size() + " снимкам (" + polygonPoints.size() + " вершин)");
     }
 
@@ -584,6 +650,9 @@ public class ImageController {
         if (roiPolygonPoints == null || roiGroupKey == null) {
             return false;
         }
+
+        // Сохраняем текущий выбранный элемент для восстановления после сброса
+        SeriesImageItem previouslySelectedItem = seriesModel.getSelectedItem();
 
         List<SeriesImageItem> itemsInGroup = findItemsInGroup(roiGroupKey);
         if (!itemsInGroup.isEmpty()) {
@@ -614,7 +683,9 @@ public class ImageController {
 
         clearRoiState();
         refreshSeriesBrowser();
-        selectFirstVisibleItem();
+
+        // Восстанавливаем выделение на том же слайсе или ближайшем видимом
+        restoreSelectionAfterProcessing(previouslySelectedItem, roiGroupKey);
         updateStatus("ROI-фильтр сброшен");
         return true;
     }
