@@ -1,4 +1,6 @@
 target/
+.mvn/apache-maven-*/
+.mvn/apache-maven-*-bin.zip
 !.mvn/wrapper/maven-wrapper.jar
 !**/src/main/**/target/
 !**/src/test/**/target/
