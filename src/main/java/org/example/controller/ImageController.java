@@ -703,7 +703,7 @@ public class ImageController {
             return;
         }
 
-        System.out.println("\n========== ЗАПУСК 3D ВИЗУАЛИЗАЦИИ ==========");
+        System.out.println("\n========== ЗАПУСК 3D/MPR РЕКОНСТРУКЦИИ ==========");
         System.out.println("Группа: " + selectedGroup);
         System.out.println("Количество слайсов: " + itemsInGroup.size());
 
@@ -716,9 +716,9 @@ public class ImageController {
         }
         System.out.println("Слайсы с позицией: " + slicesWithPosition + "/" + itemsInGroup.size());
 
-        // Запускаем 3D viewer
-        org.example.view.PointCloud3DViewer.showViewer(itemsInGroup, "3D облако точек - " + selectedGroup);
+        // Запускаем 3D/MPR viewer
+        org.example.view.PointCloud3DViewer.showViewer(itemsInGroup, "3D/MPR реконструкция - " + selectedGroup);
 
-        updateStatus("3D визуализация запущена для " + itemsInGroup.size() + " слайсов");
+        updateStatus("3D/MPR реконструкция запущена для " + itemsInGroup.size() + " слайсов");
     }
 }

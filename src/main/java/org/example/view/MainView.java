@@ -154,7 +154,7 @@ public class MainView extends JFrame {
         drawRoiMenuItem = new JMenuItem("Нарисовать ROI (многоугольник)");
         processMenu.add(drawRoiMenuItem);
 
-        JMenuItem show3DMenuItem = new JMenuItem("Показать 3D облако точек");
+        JMenuItem show3DMenuItem = new JMenuItem("Показать 3D/MPR реконструкцию");
         processMenu.add(show3DMenuItem);
 
         menuBar.add(fileMenu);
