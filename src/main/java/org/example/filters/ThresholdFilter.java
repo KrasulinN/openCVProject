@@ -10,12 +10,14 @@ import org.opencv.imgproc.Imgproc;
  * Фильтр, который применяет пороговую обработку по интенсивности пикселей.
  * Пиксели со значениями в диапазоне [minThreshold, maxThreshold] остаются с исходной яркостью,
  * остальные становятся чёрными (0).
- * Также применяется морфология (закрытие + открытие) к маске для очистки шума.
+ * Также может применяться морфология к маске для ее постобработки.
  */
 public class ThresholdFilter implements FilterStrategy {
 
     private final int minThreshold;
     private final int maxThreshold;
+    private final boolean removeNoise;
+    private final boolean fillGaps;
     private boolean debugMode = false;
 
     /**
@@ -23,6 +25,10 @@ public class ThresholdFilter implements FilterStrategy {
      * @param maxThreshold максимальное значение диапазона (0-255)
      */
     public ThresholdFilter(int minThreshold, int maxThreshold) {
+        this(minThreshold, maxThreshold, false, false);
+    }
+
+    public ThresholdFilter(int minThreshold, int maxThreshold, boolean removeNoise, boolean fillGaps) {
         if (minThreshold < 0 || minThreshold > 255) {
             throw new IllegalArgumentException("minThreshold должен быть в диапазоне 0-255");
         }
@@ -34,6 +40,8 @@ public class ThresholdFilter implements FilterStrategy {
         }
         this.minThreshold = minThreshold;
         this.maxThreshold = maxThreshold;
+        this.removeNoise = removeNoise;
+        this.fillGaps = fillGaps;
     }
 
     public void setDebugMode(boolean debugMode) {
@@ -69,9 +77,38 @@ public class ThresholdFilter implements FilterStrategy {
         Imgproc.threshold(gray, lowerMask, minThreshold, 255, Imgproc.THRESH_BINARY);
         Imgproc.threshold(gray, upperMask, maxThreshold, 255, Imgproc.THRESH_BINARY_INV);
 
-        Mat result = new Mat();
         Core.bitwise_and(lowerMask, upperMask, mask);
-        Core.bitwise_and(source, mask, result);
+
+        if (fillGaps || removeNoise) {
+            Mat kernel = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, new Size(3, 3));
+
+            if (fillGaps) {
+                Mat closeMask = new Mat();
+                Imgproc.morphologyEx(mask, closeMask, Imgproc.MORPH_CLOSE, kernel);
+                mask.release();
+                mask = closeMask;
+
+                if (debugMode) {
+                    System.out.println("[ThresholdFilter] Морфология применена к маске: CLOSE, ядро 3x3");
+                }
+            }
+
+            if (removeNoise) {
+                Mat openMask = new Mat();
+                Imgproc.morphologyEx(mask, openMask, Imgproc.MORPH_OPEN, kernel);
+                mask.release();
+                mask = openMask;
+
+                if (debugMode) {
+                    System.out.println("[ThresholdFilter] Морфология применена к маске: OPEN, ядро 3x3");
+                }
+            }
+
+            kernel.release();
+        }
+
+        Mat result = new Mat();
+        source.copyTo(result, mask);
 
         if (debugMode) {
             // Статистика по маске
@@ -86,41 +123,27 @@ public class ThresholdFilter implements FilterStrategy {
             System.out.println("[ThresholdFilter] Среднее значение маски: " + meanVal.val[0]);
         }
 
-        /*
-        // Применяем морфологию к маске: CLOSE затем OPEN
-        Mat kernel = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, new Size(3, 3));
-
-        Mat closeMask = new Mat();
-        Imgproc.morphologyEx(mask, closeMask, Imgproc.MORPH_CLOSE, kernel);
-
-        Mat openMask = new Mat();
-        Imgproc.morphologyEx(closeMask, openMask, Imgproc.MORPH_OPEN, kernel);
-
-        if (debugMode) {
-            System.out.println("[ThresholdFilter] Морфология применена к маске (CLOSE + OPEN, ядро 3x3)");
-        }
-
-        // Накладываем итоговую маску на исходное изображение
-        Mat result = new Mat();
-        Core.bitwise_and(source, source, result, openMask);
-
-         */
-
         // Освобождаем память
         lowerMask.release();
         upperMask.release();
         gray.release();
         mask.release();
-        //kernel.release();
-        //closeMask.release();
-        //openMask.release();
 
         return result;
     }
 
     @Override
     public String getName() {
-        return "Порог: [" + minThreshold + ", " + maxThreshold + "] + Морфология";
+        if (!removeNoise && !fillGaps) {
+            return "Порог: [" + minThreshold + ", " + maxThreshold + "]";
+        }
+
+        if (removeNoise && fillGaps) {
+            return "Порог: [" + minThreshold + ", " + maxThreshold + "] + Закрытие + Открытие";
+        }
+
+        String morphologyName = fillGaps ? "Закрытие" : "Открытие";
+        return "Порог: [" + minThreshold + ", " + maxThreshold + "] + " + morphologyName;
     }
 
     public int getMinThreshold() {
@@ -129,5 +152,13 @@ public class ThresholdFilter implements FilterStrategy {
 
     public int getMaxThreshold() {
         return maxThreshold;
+    }
+
+    public boolean isRemoveNoiseEnabled() {
+        return removeNoise;
+    }
+
+    public boolean isFillGapsEnabled() {
+        return fillGaps;
     }
 }

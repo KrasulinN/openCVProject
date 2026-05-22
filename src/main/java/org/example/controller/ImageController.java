@@ -319,6 +319,8 @@ public class ImageController {
 
         int minBrightness = view.getMinBrightnessThreshold();
         int maxBrightness = view.getMaxBrightnessThreshold();
+        boolean removeNoise = view.isNoiseRemovalEnabled();
+        boolean fillGaps = view.isGapFillEnabled();
 
         if (minBrightness < 0 || minBrightness > 255 || maxBrightness < 0 || maxBrightness > 255) {
             view.showError("Значения яркости должны быть в диапазоне 0-255");
@@ -332,12 +334,23 @@ public class ImageController {
         System.out.println("\n========== НАЧАЛО ОБРАБОТКИ ПОРОГОВЫМ ФИЛЬТРОМ ==========");
         System.out.println("Группа: " + selectedGroup);
         System.out.println("Порог яркости: [" + minBrightness + ", " + maxBrightness + "]");
+        String morphologyText;
+        if (removeNoise && fillGaps) {
+            morphologyText = "Закрытие + Открытие";
+        } else if (fillGaps) {
+            morphologyText = "Закрытие";
+        } else if (removeNoise) {
+            morphologyText = "Открытие";
+        } else {
+            morphologyText = "нет";
+        }
+        System.out.println("Морфология: " + morphologyText);
         System.out.println("Количество снимков: " + itemsInGroup.size());
 
-        // Создаём пакет фильтров: только пороговый (морфология уже внутри него)
-        FilterBatch batch = model.createFilterBatch("Пороговый фильтр для " + selectedGroup);
+        // Создаём пакет фильтров: пороговый фильтр с выбранной морфологией
+        FilterBatch batch = model.createFilterBatch("Порог + морфология для " + selectedGroup);
 
-        ThresholdFilter thresholdFilter = new ThresholdFilter(minBrightness, maxBrightness);
+        ThresholdFilter thresholdFilter = new ThresholdFilter(minBrightness, maxBrightness, removeNoise, fillGaps);
         thresholdFilter.setDebugMode(true);
         batch.addFilter(thresholdFilter);
 
@@ -373,7 +386,7 @@ public class ImageController {
 
         // Восстанавливаем выделение на том же слайсе или ближайшем видимом
         restoreSelectionAfterProcessing(previouslySelectedItem, selectedGroup);
-        updateStatus("Пороговый фильтр применен к " + itemsInGroup.size() + " снимкам (порог: [" + minBrightness + ", " + maxBrightness + "])");
+        updateStatus("Пороговый фильтр применен к " + itemsInGroup.size() + " снимкам (порог: [" + minBrightness + ", " + maxBrightness + "], морфология: " + morphologyText + ")");
     }
 
 

@@ -26,10 +26,14 @@ import java.util.function.Consumer;
 
 public class MainView extends JFrame {
     private static final String ALL_GROUPS_LABEL = "Все группы";
+    private static final String MORPH_OPEN_LABEL = "Убрать мелкие шумы";
+    private static final String MORPH_CLOSE_LABEL = "Заполнить мелкие пропуски";
 
     private final ImageCanvas imagePanel;
     private final JTree seriesTree;
     private final JComboBox<String> groupFilterCombo;
+    private final JCheckBox noiseRemovalCheckBox;
+    private final JCheckBox gapFillCheckBox;
     private final JLabel statusLabel;
     private final JTextField minBrightnessField;
     private final JTextField maxBrightnessField;
@@ -59,6 +63,8 @@ public class MainView extends JFrame {
         statusLabel.setBorder(BorderFactory.createEmptyBorder(5, 10, 5, 10));
         minBrightnessField = new JTextField("0", 4);
         maxBrightnessField = new JTextField("255", 4);
+        noiseRemovalCheckBox = new JCheckBox(MORPH_OPEN_LABEL, true);
+        gapFillCheckBox = new JCheckBox(MORPH_CLOSE_LABEL, true);
 
         imagePanel = new ImageCanvas(statusLabel);
         seriesTree = new JTree(createEmptyTreeModel());
@@ -148,7 +154,7 @@ public class MainView extends JFrame {
         editMenu.add(resetMenuItem);
 
         JMenu processMenu = new JMenu("Обработка");
-        contourInGroupMenuItem = new JMenuItem("Поиск контуров в группе");
+        contourInGroupMenuItem = new JMenuItem("Порог + морфология в группе");
         processMenu.add(contourInGroupMenuItem);
 
         drawRoiMenuItem = new JMenuItem("Нарисовать ROI (многоугольник)");
@@ -178,10 +184,19 @@ public class MainView extends JFrame {
         JLabel maxLabel = new JLabel("Макс. яркость:");
         maxBrightnessField.setToolTipText("Максимальное значение яркости (0-255)");
 
+        JPanel morphologyPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 0));
+        morphologyPanel.setOpaque(false);
+        noiseRemovalCheckBox.setToolTipText("Убирает мелкие шумы на маске");
+        gapFillCheckBox.setToolTipText("Заполняет мелкие пропуски на маске");
+        morphologyPanel.add(noiseRemovalCheckBox);
+        morphologyPanel.add(gapFillCheckBox);
+
         toolbar.add(minLabel);
         toolbar.add(minBrightnessField);
         toolbar.add(maxLabel);
         toolbar.add(maxBrightnessField);
+        toolbar.add(new JLabel("Морфология:"));
+        toolbar.add(morphologyPanel);
         toolbar.add(groupFilterCombo);
 
         add(toolbar, BorderLayout.NORTH);
@@ -373,6 +388,14 @@ public class MainView extends JFrame {
         } catch (NumberFormatException e) {
             return 255;
         }
+    }
+
+    public boolean isNoiseRemovalEnabled() {
+        return noiseRemovalCheckBox.isSelected();
+    }
+
+    public boolean isGapFillEnabled() {
+        return gapFillCheckBox.isSelected();
     }
 
     public void setSeriesSelectionListener(Consumer<SeriesTreeNodeData> listener) {
