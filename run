@@ -1,0 +1,60 @@
+#!/usr/bin/env sh
+set -eu
+
+MAVEN_VERSION="3.9.11"
+MAVEN_URL="https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/${MAVEN_VERSION}/apache-maven-${MAVEN_VERSION}-bin.zip"
+
+fail() {
+  printf '\n%s\n' "$1" >&2
+  exit 1
+}
+
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+cd "$SCRIPT_DIR"
+
+JAVA_VERSION=$(java -version 2>&1 | awk -F '"' '/version/ { print $2; exit }' || true)
+if [ -z "$JAVA_VERSION" ]; then
+  fail "Java was not found. Install JDK 17 or newer and try again."
+fi
+
+JAVA_MAJOR=$(printf '%s' "$JAVA_VERSION" | awk -F. '{ if ($1 == "1") print $2; else print $1 }')
+case "$JAVA_MAJOR" in
+  ''|*[!0-9]*) fail "Could not detect Java version from: $JAVA_VERSION" ;;
+esac
+
+if [ "$JAVA_MAJOR" -lt 17 ]; then
+  fail "Java $JAVA_VERSION is too old. Install JDK 17 or newer and make it first in PATH."
+fi
+
+MAVEN_DIR="$SCRIPT_DIR/.mvn/apache-maven-${MAVEN_VERSION}"
+MAVEN_BIN="$MAVEN_DIR/bin/mvn"
+MAVEN_ZIP="$SCRIPT_DIR/.mvn/apache-maven-${MAVEN_VERSION}-bin.zip"
+
+if [ -x "$MAVEN_BIN" ]; then
+  MVN="$MAVEN_BIN"
+elif command -v mvn >/dev/null 2>&1; then
+  MVN="mvn"
+else
+  printf 'Maven was not found. Downloading Apache Maven %s locally...\n' "$MAVEN_VERSION"
+  mkdir -p "$SCRIPT_DIR/.mvn"
+
+  if [ ! -f "$MAVEN_ZIP" ]; then
+    if command -v curl >/dev/null 2>&1; then
+      curl -fL "$MAVEN_URL" -o "$MAVEN_ZIP"
+    elif command -v wget >/dev/null 2>&1; then
+      wget -O "$MAVEN_ZIP" "$MAVEN_URL"
+    else
+      fail "Neither curl nor wget was found. Install Maven manually or install curl/wget."
+    fi
+  fi
+
+  if command -v unzip >/dev/null 2>&1; then
+    unzip -q -o "$MAVEN_ZIP" -d "$SCRIPT_DIR/.mvn"
+  else
+    fail "unzip was not found. Install unzip or Maven manually."
+  fi
+
+  MVN="$MAVEN_BIN"
+fi
+
+"$MVN" -DskipTests javafx:run "$@"

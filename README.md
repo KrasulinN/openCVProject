@@ -1,0 +1,183 @@
+# Medical Image Editor
+
+Учебный проект по обработке медицинских изображений с возможностью 3D-реконструкции.
+Разрабатывается в рамках группового проекта 101М группы по дисциплине "Введение в техническое зрение и обработку изображений" ФМИТ НИ МГУ им. Н.П. Огарева.
+
+## О проекте
+
+Приложение позволяет загружать медицинские снимки, применять фильтры обработки и строить 3D-модели на основе серии изображений. Основано на Java, OpenCV, Swing и JavaFX.
+
+## Что нужно установить
+
+Обязательно нужен только JDK 17 или новее.
+
+Maven, OpenCV и JavaFX вручную ставить не нужно:
+
+- Maven при необходимости скачает локальный runner в папку `.mvn`;
+- OpenCV и JavaFX подтянутся как Maven-зависимости из `pom.xml`.
+
+Для первой загрузки зависимостей нужен интернет.
+
+## Быстрый запуск
+
+### Windows
+
+1. Установите JDK 17:
+
+   ```powershell
+   winget install --id EclipseAdoptium.Temurin.17.JDK -e
+   ```
+
+2. Закройте и заново откройте PowerShell или IntelliJ IDEA.
+
+3. Проверьте Java:
+
+   ```powershell
+   java -version
+   ```
+
+   В выводе должна быть версия 17 или новее.
+
+4. Запустите проект из корня репозитория:
+
+   ```powershell
+   .\run.cmd
+   ```
+
+   Можно также запустить PowerShell-версию:
+
+   ```powershell
+   .\run.ps1
+   ```
+
+### macOS
+
+1. Установите JDK 17. Через Homebrew:
+
+   ```bash
+   brew install openjdk@17
+   ```
+
+2. Если `java -version` не видит JDK 17, добавьте Java в `PATH`.
+
+   Для Apple Silicon:
+
+   ```bash
+   echo 'export PATH="/opt/homebrew/opt/openjdk@17/bin:$PATH"' >> ~/.zshrc
+   source ~/.zshrc
+   ```
+
+   Для Intel Mac:
+
+   ```bash
+   echo 'export PATH="/usr/local/opt/openjdk@17/bin:$PATH"' >> ~/.zshrc
+   source ~/.zshrc
+   ```
+
+3. Проверьте Java:
+
+   ```bash
+   java -version
+   ```
+
+4. Запустите проект из корня репозитория:
+
+   ```bash
+   sh ./run
+   ```
+
+   Если хотите запускать как исполняемый файл:
+
+   ```bash
+   chmod +x run
+   ./run
+   ```
+
+### Linux
+
+1. Установите JDK 17, `curl` или `wget`, а также `unzip`.
+
+   Для Ubuntu/Debian:
+
+   ```bash
+   sudo apt update
+   sudo apt install openjdk-17-jdk curl unzip
+   ```
+
+2. Запустите проект:
+
+   ```bash
+   sh ./run
+   ```
+
+## Как работает runner
+
+Файлы запуска:
+
+- `run.cmd` - Windows runner для cmd/PowerShell;
+- `run.ps1` - основной Windows runner;
+- `run` - runner для macOS/Linux;
+- `run.zsh` - совместимость со старым zsh-запуском.
+
+Runner делает следующее:
+
+1. Проверяет, что доступна Java 17 или новее.
+2. На Windows пробует сам найти установленный JDK 17 в стандартных папках, даже если в `PATH` первой стоит Java 8.
+3. Ищет локальный Maven в `.mvn/apache-maven-3.9.11`.
+4. Если локального Maven нет, пробует использовать системный `mvn`.
+5. Если `mvn` не найден, скачивает Apache Maven локально в `.mvn`.
+6. Запускает приложение командой:
+
+   ```bash
+   mvn -DskipTests javafx:run
+   ```
+
+## Запуск через IntelliJ IDEA
+
+1. Откройте проект через файл `pom.xml`.
+2. Если IntelliJ не подключила Maven автоматически, нажмите правой кнопкой по `pom.xml` и выберите `Add as Maven Project`.
+3. Откройте `File -> Project Structure -> Project` и выберите JDK 17.
+4. Откройте Maven-панель и нажмите `Reload All Maven Projects` или `Sync Project`.
+5. Запустите Maven goal:
+
+   ```text
+   javafx:run
+   ```
+
+Не запускайте `Main.java` напрямую, если IntelliJ еще не подтянула Maven-зависимости: в этом случае могут появиться ошибки вида `package javafx.application does not exist`.
+
+## Ручной запуск через Maven
+
+Если Maven уже установлен глобально:
+
+```bash
+mvn -DskipTests javafx:run
+```
+
+Проверка сборки:
+
+```bash
+mvn -DskipTests compile
+```
+
+## Частые ошибки
+
+### `java` не распознано как команда
+
+JDK не установлен или не добавлен в `PATH`. Установите JDK 17 и заново откройте терминал.
+
+### Используется Java 8 вместо Java 17
+
+В `PATH` старая Java стоит выше JDK 17. Переместите JDK 17 выше в `PATH` или удалите старую Java из переменных среды.
+
+### `package javafx.application does not exist`
+
+Проект открыт не как Maven-проект или IntelliJ еще не скачала зависимости. Выполните Maven sync/reload и убедитесь, что выбран JDK 17.
+
+### Runner не может скачать Maven
+
+Проверьте интернет. На macOS/Linux также должны быть доступны `curl` или `wget` и `unzip`.
+
+## Данные для автозагрузки
+
+Если в корне проекта есть папка `data`, приложение попробует автоматически загрузить изображения из нее при старте.
