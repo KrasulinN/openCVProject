@@ -18,20 +18,31 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 public class ImageController {
+    private static final double SERIES_LOW_PERCENTILE = 0.01;
+    private static final double SERIES_HIGH_PERCENTILE = 0.99;
+    private static final int MIN_3D_NOISE_COMPONENT_VOXELS = 24;
+    private static final int MIN_3D_NOISE_COMPONENT_SLICES = 2;
+    private static final int MAX_REMOVABLE_3D_COMPONENT_VOXELS = 512;
+
     private final ImageModel model;
     private final ImageSeriesModel seriesModel;
     private final MainView view;
+    private final Set<String> sharedNormalizedGroupKeys = new HashSet<>();
 
     // Состояние для пакетной обработки группой
     private FilterBatch activeGroupFilterBatch;
     private String activeGroupFilterKey;
     private boolean groupFilterApplied;
     private boolean groupFilterCanRedo;
+    private boolean activeGroup3DNoiseCleanupEnabled;
 
     // Состояние для ROI-фильтра (многоугольник)
     private List<Point> roiPolygonPoints;
@@ -165,11 +176,14 @@ public class ImageController {
         }
 
         Set<Path> uniquePaths = new LinkedHashSet<>(paths);
+        Map<String, DicomImageLoader.IntensityWindow> dicomGroupWindows = computeDicomGroupWindows(uniquePaths);
+        sharedNormalizedGroupKeys.clear();
+        sharedNormalizedGroupKeys.addAll(dicomGroupWindows.keySet());
         List<SeriesImageItem> loadedItems = new ArrayList<>();
         List<String> errors = new ArrayList<>();
 
         for (Path path : uniquePaths) {
-            SeriesImageItem item = loadImageItem(path);
+            SeriesImageItem item = loadImageItem(path, dicomGroupWindows);
             if (item != null) {
                 loadedItems.add(item);
             } else {
@@ -180,6 +194,7 @@ public class ImageController {
         if (loadedItems.isEmpty()) {
             model.clear();
             seriesModel.clear();
+            sharedNormalizedGroupKeys.clear();
             clearAllFilterStates();
             refreshSeriesBrowser();
             view.displayImage(null);
@@ -206,7 +221,41 @@ public class ImageController {
         }
     }
 
-    private SeriesImageItem loadImageItem(Path path) {
+    private Map<String, DicomImageLoader.IntensityWindow> computeDicomGroupWindows(Set<Path> paths) {
+        Map<String, List<Path>> pathsByGroup = new HashMap<>();
+        for (Path path : paths) {
+            DicomImageLoader.DicomSeriesInfo seriesInfo = DicomImageLoader.readSeriesInfo(path);
+            if (seriesInfo == null) {
+                continue;
+            }
+
+            List<Path> groupPaths = pathsByGroup.get(seriesInfo.getGroupKey());
+            if (groupPaths == null) {
+                groupPaths = new ArrayList<>();
+                pathsByGroup.put(seriesInfo.getGroupKey(), groupPaths);
+            }
+            groupPaths.add(path);
+        }
+
+        Map<String, DicomImageLoader.IntensityWindow> windowsByGroup = new HashMap<>();
+        for (Map.Entry<String, List<Path>> entry : pathsByGroup.entrySet()) {
+            DicomImageLoader.IntensityWindow window = DicomImageLoader.computeSeriesPercentileWindow(
+                    entry.getValue(),
+                    SERIES_LOW_PERCENTILE,
+                    SERIES_HIGH_PERCENTILE
+            );
+            if (window != null) {
+                windowsByGroup.put(entry.getKey(), window);
+                System.out.println("[DICOM] Shared series normalization for " + entry.getKey()
+                        + ": low=" + String.format("%.2f", window.getLow())
+                        + ", high=" + String.format("%.2f", window.getHigh())
+                        + ", files=" + entry.getValue().size());
+            }
+        }
+        return windowsByGroup;
+    }
+
+    private SeriesImageItem loadImageItem(Path path, Map<String, DicomImageLoader.IntensityWindow> dicomGroupWindows) {
         if (path == null) {
             return null;
         }
@@ -226,7 +275,10 @@ public class ImageController {
 
         if (image.empty()) {
             try {
-                image = DicomImageLoader.load(path);
+                DicomImageLoader.IntensityWindow intensityWindow = seriesInfo == null || dicomGroupWindows == null
+                        ? null
+                        : dicomGroupWindows.get(seriesInfo.getGroupKey());
+                image = DicomImageLoader.load(path, intensityWindow);
             } catch (IOException ex) {
                 return null;
             }
@@ -358,7 +410,14 @@ public class ImageController {
         // Создаём пакет фильтров: пороговый фильтр с выбранной морфологией
         FilterBatch batch = model.createFilterBatch("Порог + морфология для " + selectedGroup);
 
-        ThresholdFilter thresholdFilter = new ThresholdFilter(minBrightness, maxBrightness, removeNoise, fillGaps);
+        boolean normalizeEachSlice = !sharedNormalizedGroupKeys.contains(selectedGroup);
+        ThresholdFilter thresholdFilter = new ThresholdFilter(
+                minBrightness,
+                maxBrightness,
+                removeNoise,
+                fillGaps,
+                normalizeEachSlice
+        );
         thresholdFilter.setDebugMode(true);
         batch.addFilter(thresholdFilter);
 
@@ -383,18 +442,198 @@ public class ImageController {
             originalImage.release();
         }
 
+        if (removeNoise) {
+            int removedVoxels = removeSmall3DNoise(itemsInGroup);
+            System.out.println("[3DNoiseCleanup] Removed voxels: " + removedVoxels);
+        }
+
         System.out.println("\n========== ЗАВЕРШЕНИЕ ОБРАБОТКИ ПОРОГОВЫМ ФИЛЬТРОМ ==========\n");
 
         activeGroupFilterBatch = batch;
         activeGroupFilterKey = selectedGroup;
         groupFilterApplied = true;
         groupFilterCanRedo = false;
+        activeGroup3DNoiseCleanupEnabled = removeNoise;
 
         refreshSeriesBrowser();
 
         // Восстанавливаем выделение на том же слайсе или ближайшем видимом
         restoreSelectionAfterProcessing(previouslySelectedItem, selectedGroup);
         updateStatus("Пороговый фильтр применен к " + itemsInGroup.size() + " снимкам (порог: [" + minBrightness + ", " + maxBrightness + "], морфология: " + morphologyText + ")");
+    }
+
+    private int removeSmall3DNoise(List<SeriesImageItem> items) {
+        if (items == null || items.isEmpty()) {
+            return 0;
+        }
+
+        Mat firstImage = items.get(0).getImage();
+        if (firstImage == null || firstImage.empty() || firstImage.channels() != 1) {
+            return 0;
+        }
+
+        int width = firstImage.cols();
+        int height = firstImage.rows();
+        int sliceSize = width * height;
+        int depth = items.size();
+        byte[][] pixelsBySlice = new byte[depth][];
+        byte[][] visitedBySlice = new byte[depth][];
+
+        for (int z = 0; z < depth; z++) {
+            Mat image = items.get(z).getImage();
+            if (image == null || image.empty()
+                    || image.channels() != 1
+                    || image.cols() != width
+                    || image.rows() != height) {
+                return 0;
+            }
+
+            byte[] pixels = new byte[sliceSize];
+            image.get(0, 0, pixels);
+            pixelsBySlice[z] = pixels;
+            visitedBySlice[z] = new byte[sliceSize];
+        }
+
+        boolean[] touchedSlices = new boolean[depth];
+        int[] touchedSliceIds = new int[depth];
+        long volumeSize = (long) sliceSize * depth;
+        int initialQueueSize = (int) Math.min(4096L, Math.max(1L, volumeSize));
+        int removableBufferSize = (int) Math.min(MAX_REMOVABLE_3D_COMPONENT_VOXELS, Math.max(1L, volumeSize));
+        int[] queue = new int[initialQueueSize];
+        int[] component = new int[removableBufferSize];
+        int removedVoxels = 0;
+
+        for (int z = 0; z < depth; z++) {
+            for (int index = 0; index < sliceSize; index++) {
+                if (visitedBySlice[z][index] != 0 || (pixelsBySlice[z][index] & 0xFF) == 0) {
+                    continue;
+                }
+
+                ComponentStats stats = collect3DComponent(
+                        pixelsBySlice,
+                        visitedBySlice,
+                        width,
+                        height,
+                        depth,
+                        z,
+                        index,
+                        queue,
+                        component,
+                        touchedSlices,
+                        touchedSliceIds
+                );
+
+                boolean removable = stats.voxelCount <= MAX_REMOVABLE_3D_COMPONENT_VOXELS
+                        && (stats.voxelCount < MIN_3D_NOISE_COMPONENT_VOXELS
+                        || stats.sliceCount < MIN_3D_NOISE_COMPONENT_SLICES);
+                if (!removable) {
+                    continue;
+                }
+
+                for (int i = 0; i < stats.storedVoxelCount; i++) {
+                    int encoded = component[i];
+                    int voxelZ = encoded / sliceSize;
+                    int voxelIndex = encoded - voxelZ * sliceSize;
+                    pixelsBySlice[voxelZ][voxelIndex] = 0;
+                }
+                removedVoxels += stats.storedVoxelCount;
+            }
+        }
+
+        if (removedVoxels > 0) {
+            for (int z = 0; z < depth; z++) {
+                Mat cleaned = items.get(z).getImage().clone();
+                cleaned.put(0, 0, pixelsBySlice[z]);
+                items.get(z).setImage(cleaned);
+                cleaned.release();
+            }
+        }
+
+        return removedVoxels;
+    }
+
+    private ComponentStats collect3DComponent(byte[][] pixelsBySlice,
+                                              byte[][] visitedBySlice,
+                                              int width,
+                                              int height,
+                                              int depth,
+                                              int startZ,
+                                              int startIndex,
+                                              int[] initialQueue,
+                                              int[] component,
+                                              boolean[] touchedSlices,
+                                              int[] touchedSliceIds) {
+        int sliceSize = width * height;
+        int[] queue = initialQueue;
+        int head = 0;
+        int tail = 0;
+        int voxelCount = 0;
+        int storedVoxelCount = 0;
+        int touchedSliceCount = 0;
+
+        queue[tail++] = startZ * sliceSize + startIndex;
+        visitedBySlice[startZ][startIndex] = 1;
+
+        while (head < tail) {
+            int encoded = queue[head++];
+            int z = encoded / sliceSize;
+            int index = encoded - z * sliceSize;
+            int y = index / width;
+            int x = index - y * width;
+
+            voxelCount++;
+            if (storedVoxelCount < component.length) {
+                component[storedVoxelCount++] = encoded;
+            }
+            if (!touchedSlices[z]) {
+                touchedSlices[z] = true;
+                touchedSliceIds[touchedSliceCount++] = z;
+            }
+
+            for (int dz = -1; dz <= 1; dz++) {
+                int nz = z + dz;
+                if (nz < 0 || nz >= depth) {
+                    continue;
+                }
+                for (int dy = -1; dy <= 1; dy++) {
+                    int ny = y + dy;
+                    if (ny < 0 || ny >= height) {
+                        continue;
+                    }
+                    for (int dx = -1; dx <= 1; dx++) {
+                        if (dx == 0 && dy == 0 && dz == 0) {
+                            continue;
+                        }
+
+                        int nx = x + dx;
+                        if (nx < 0 || nx >= width) {
+                            continue;
+                        }
+
+                        int neighborIndex = ny * width + nx;
+                        if (visitedBySlice[nz][neighborIndex] != 0
+                                || (pixelsBySlice[nz][neighborIndex] & 0xFF) == 0) {
+                            continue;
+                        }
+
+                        if (tail == queue.length) {
+                            int[] grownQueue = new int[queue.length * 2];
+                            System.arraycopy(queue, 0, grownQueue, 0, queue.length);
+                            queue = grownQueue;
+                        }
+
+                        visitedBySlice[nz][neighborIndex] = 1;
+                        queue[tail++] = nz * sliceSize + neighborIndex;
+                    }
+                }
+            }
+        }
+
+        for (int i = 0; i < touchedSliceCount; i++) {
+            touchedSlices[touchedSliceIds[i]] = false;
+        }
+
+        return new ComponentStats(voxelCount, storedVoxelCount, touchedSliceCount);
     }
 
 
@@ -414,6 +653,7 @@ public class ImageController {
         activeGroupFilterKey = null;
         groupFilterApplied = false;
         groupFilterCanRedo = false;
+        activeGroup3DNoiseCleanupEnabled = false;
     }
 
     /**
@@ -496,6 +736,10 @@ public class ImageController {
         }
 
         activeGroupFilterBatch.applyToItems(itemsInGroup);
+        if (activeGroup3DNoiseCleanupEnabled) {
+            int removedVoxels = removeSmall3DNoise(itemsInGroup);
+            System.out.println("[3DNoiseCleanup] Removed voxels after redo: " + removedVoxels);
+        }
         groupFilterApplied = true;
         groupFilterCanRedo = false;
         refreshSeriesBrowser();
@@ -568,6 +812,11 @@ public class ImageController {
                     item.resetToOriginal();
                 }
             }
+        }
+
+        if (activeGroup3DNoiseCleanupEnabled) {
+            int removedVoxels = removeSmall3DNoise(itemsInGroup);
+            System.out.println("[3DNoiseCleanup] Removed voxels after ROI undo: " + removedVoxels);
         }
 
         roiApplied = false;
@@ -735,6 +984,11 @@ public class ImageController {
             }
         }
 
+        if (activeGroup3DNoiseCleanupEnabled) {
+            int removedVoxels = removeSmall3DNoise(itemsInGroup);
+            System.out.println("[3DNoiseCleanup] Removed voxels after ROI reset: " + removedVoxels);
+        }
+
         clearRoiState();
         refreshSeriesBrowser();
 
@@ -774,5 +1028,17 @@ public class ImageController {
         org.example.view.PointCloud3DViewer.showViewer(itemsInGroup, "3D/MPR реконструкция - " + selectedGroup);
 
         updateStatus("3D/MPR реконструкция запущена для " + itemsInGroup.size() + " слайсов");
+    }
+
+    private static final class ComponentStats {
+        private final int voxelCount;
+        private final int storedVoxelCount;
+        private final int sliceCount;
+
+        private ComponentStats(int voxelCount, int storedVoxelCount, int sliceCount) {
+            this.voxelCount = voxelCount;
+            this.storedVoxelCount = storedVoxelCount;
+            this.sliceCount = sliceCount;
+        }
     }
 }

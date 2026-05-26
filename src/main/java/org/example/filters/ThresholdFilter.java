@@ -21,6 +21,7 @@ public class ThresholdFilter implements FilterStrategy {
     private final int maxThreshold;
     private final boolean removeNoise;
     private final boolean fillGaps;
+    private final boolean normalizeBrightness;
     private boolean debugMode = false;
 
     /**
@@ -32,6 +33,11 @@ public class ThresholdFilter implements FilterStrategy {
     }
 
     public ThresholdFilter(int minThreshold, int maxThreshold, boolean removeNoise, boolean fillGaps) {
+        this(minThreshold, maxThreshold, removeNoise, fillGaps, true);
+    }
+
+    public ThresholdFilter(int minThreshold, int maxThreshold, boolean removeNoise, boolean fillGaps,
+                           boolean normalizeBrightness) {
         if (minThreshold < 0 || minThreshold > 255) {
             throw new IllegalArgumentException("minThreshold должен быть в диапазоне 0-255");
         }
@@ -45,6 +51,7 @@ public class ThresholdFilter implements FilterStrategy {
         this.maxThreshold = maxThreshold;
         this.removeNoise = removeNoise;
         this.fillGaps = fillGaps;
+        this.normalizeBrightness = normalizeBrightness;
     }
 
     public void setDebugMode(boolean debugMode) {
@@ -71,12 +78,13 @@ public class ThresholdFilter implements FilterStrategy {
         }
         Imgproc.GaussianBlur(gray, gray, new Size(3, 3), 0);
         // Создаём бинарную маску
-        Mat normalizedGray = normalizeBrightness(gray);
+        Mat normalizedGray = normalizeBrightness ? normalizeBrightness(gray) : gray.clone();
 
         if (debugMode) {
             Core.MinMaxLocResult before = Core.minMaxLoc(gray);
             Core.MinMaxLocResult after = Core.minMaxLoc(normalizedGray);
-            System.out.println("[ThresholdFilter] Brightness normalization: min/max "
+            System.out.println("[ThresholdFilter] Brightness normalization "
+                    + (normalizeBrightness ? "enabled" : "disabled") + ": min/max "
                     + before.minVal + "/" + before.maxVal + " -> "
                     + after.minVal + "/" + after.maxVal);
         }

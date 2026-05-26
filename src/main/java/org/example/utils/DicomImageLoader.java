@@ -10,6 +10,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
+import java.util.List;
 import java.util.Locale;
 
 public final class DicomImageLoader {
@@ -64,6 +65,10 @@ public final class DicomImageLoader {
     }
 
     public static Mat load(Path path) throws IOException {
+        return load(path, null);
+    }
+
+    public static Mat load(Path path, IntensityWindow intensityWindow) throws IOException {
         byte[] bytes = Files.readAllBytes(path);
         if (bytes.length < 132 || !hasDicomPrefix(bytes)) {
             throw new IOException("File is not a DICOM image");
@@ -73,12 +78,74 @@ public final class DicomImageLoader {
         validateMetadata(metadata, bytes.length);
 
         byte[] normalizedPixels = metadata.bitsAllocated == 8
-                ? normalize8Bit(bytes, metadata)
-                : normalize16Bit(bytes, metadata);
+                ? normalize8Bit(bytes, metadata, intensityWindow)
+                : normalize16Bit(bytes, metadata, intensityWindow);
 
         Mat image = new Mat(metadata.rows, metadata.columns, CvType.CV_8UC1);
         image.put(0, 0, normalizedPixels);
         return image;
+    }
+
+    public static IntensityWindow computeSeriesPercentileWindow(List<Path> paths,
+                                                                double lowPercentile,
+                                                                double highPercentile) {
+        if (paths == null || paths.isEmpty()) {
+            return null;
+        }
+
+        double min = Double.MAX_VALUE;
+        double max = -Double.MAX_VALUE;
+        long pixelCount = 0L;
+
+        for (Path path : paths) {
+            try {
+                byte[] bytes = Files.readAllBytes(path);
+                if (bytes.length < 132 || !hasDicomPrefix(bytes)) {
+                    continue;
+                }
+
+                DicomMetadata metadata = readMetadata(bytes);
+                validateMetadata(metadata, bytes.length);
+                IntensityRange range = scanIntensityRange(bytes, metadata);
+                if (range.pixelCount <= 0) {
+                    continue;
+                }
+
+                min = Math.min(min, range.min);
+                max = Math.max(max, range.max);
+                pixelCount += range.pixelCount;
+            } catch (IOException | RuntimeException ex) {
+                // Ignore files that cannot participate in the shared DICOM normalization.
+            }
+        }
+
+        if (pixelCount <= 0 || !Double.isFinite(min) || !Double.isFinite(max) || max <= min) {
+            return null;
+        }
+
+        int[] histogram = new int[65536];
+        for (Path path : paths) {
+            try {
+                byte[] bytes = Files.readAllBytes(path);
+                if (bytes.length < 132 || !hasDicomPrefix(bytes)) {
+                    continue;
+                }
+
+                DicomMetadata metadata = readMetadata(bytes);
+                validateMetadata(metadata, bytes.length);
+                addToHistogram(bytes, metadata, min, max, histogram);
+            } catch (IOException | RuntimeException ex) {
+                // Keep the window based on every readable file in the group.
+            }
+        }
+
+        double low = percentileFromHistogram(histogram, pixelCount, min, max, lowPercentile);
+        double high = percentileFromHistogram(histogram, pixelCount, min, max, highPercentile);
+        if (!Double.isFinite(low) || !Double.isFinite(high) || high <= low) {
+            return null;
+        }
+
+        return new IntensityWindow(low, high);
     }
 
     private static void validateMetadata(DicomMetadata metadata, int fileLength) throws IOException {
@@ -109,7 +176,7 @@ public final class DicomImageLoader {
         }
     }
 
-    private static byte[] normalize8Bit(byte[] bytes, DicomMetadata metadata) {
+    private static byte[] normalize8Bit(byte[] bytes, DicomMetadata metadata, IntensityWindow intensityWindow) {
         int pixelCount = metadata.rows * metadata.columns;
         byte[] output = new byte[pixelCount];
         double min = Double.MAX_VALUE;
@@ -122,7 +189,7 @@ public final class DicomImageLoader {
             max = Math.max(max, scaled);
         }
 
-        double[] window = resolveWindow(metadata, min, max);
+        double[] window = resolveWindow(metadata, min, max, intensityWindow);
         double low = window[0];
         double range = Math.max(window[1] - window[0], 1.0);
 
@@ -135,7 +202,7 @@ public final class DicomImageLoader {
         return output;
     }
 
-    private static byte[] normalize16Bit(byte[] bytes, DicomMetadata metadata) {
+    private static byte[] normalize16Bit(byte[] bytes, DicomMetadata metadata, IntensityWindow intensityWindow) {
         int pixelCount = metadata.rows * metadata.columns;
         byte[] output = new byte[pixelCount];
         ByteBuffer buffer = ByteBuffer.wrap(bytes)
@@ -150,7 +217,7 @@ public final class DicomImageLoader {
             max = Math.max(max, scaled);
         }
 
-        double[] window = resolveWindow(metadata, min, max);
+        double[] window = resolveWindow(metadata, min, max, intensityWindow);
         double low = window[0];
         double range = Math.max(window[1] - window[0], 1.0);
 
@@ -168,13 +235,89 @@ public final class DicomImageLoader {
         return signed ? value : (value & 0xFFFF);
     }
 
-    private static double[] resolveWindow(DicomMetadata metadata, double min, double max) {
+    private static double[] resolveWindow(DicomMetadata metadata, double min, double max, IntensityWindow intensityWindow) {
+        if (intensityWindow != null && intensityWindow.isValid()) {
+            return new double[]{intensityWindow.getLow(), intensityWindow.getHigh()};
+        }
         if (metadata.windowWidth > 1.0) {
             double low = metadata.windowCenter - metadata.windowWidth / 2.0;
             double high = metadata.windowCenter + metadata.windowWidth / 2.0;
             return new double[]{low, high};
         }
         return new double[]{min, max};
+    }
+
+    private static IntensityRange scanIntensityRange(byte[] bytes, DicomMetadata metadata) {
+        int pixelCount = metadata.rows * metadata.columns;
+        double min = Double.MAX_VALUE;
+        double max = -Double.MAX_VALUE;
+
+        if (metadata.bitsAllocated == 8) {
+            for (int i = 0; i < pixelCount; i++) {
+                int value = bytes[metadata.pixelDataOffset + i] & 0xFF;
+                double scaled = value * metadata.rescaleSlope + metadata.rescaleIntercept;
+                min = Math.min(min, scaled);
+                max = Math.max(max, scaled);
+            }
+        } else {
+            ByteBuffer buffer = ByteBuffer.wrap(bytes)
+                    .order(metadata.littleEndian ? ByteOrder.LITTLE_ENDIAN : ByteOrder.BIG_ENDIAN);
+            for (int i = 0; i < pixelCount; i++) {
+                int value = read16BitValue(buffer, metadata.pixelDataOffset + i * 2, metadata.pixelRepresentationSigned);
+                double scaled = value * metadata.rescaleSlope + metadata.rescaleIntercept;
+                min = Math.min(min, scaled);
+                max = Math.max(max, scaled);
+            }
+        }
+
+        return new IntensityRange(min, max, pixelCount);
+    }
+
+    private static void addToHistogram(byte[] bytes, DicomMetadata metadata, double min, double max, int[] histogram) {
+        int pixelCount = metadata.rows * metadata.columns;
+        double scale = (histogram.length - 1) / (max - min);
+
+        if (metadata.bitsAllocated == 8) {
+            for (int i = 0; i < pixelCount; i++) {
+                int value = bytes[metadata.pixelDataOffset + i] & 0xFF;
+                double scaled = value * metadata.rescaleSlope + metadata.rescaleIntercept;
+                histogram[histogramIndex(scaled, min, scale, histogram.length)]++;
+            }
+            return;
+        }
+
+        ByteBuffer buffer = ByteBuffer.wrap(bytes)
+                .order(metadata.littleEndian ? ByteOrder.LITTLE_ENDIAN : ByteOrder.BIG_ENDIAN);
+        for (int i = 0; i < pixelCount; i++) {
+            int value = read16BitValue(buffer, metadata.pixelDataOffset + i * 2, metadata.pixelRepresentationSigned);
+            double scaled = value * metadata.rescaleSlope + metadata.rescaleIntercept;
+            histogram[histogramIndex(scaled, min, scale, histogram.length)]++;
+        }
+    }
+
+    private static int histogramIndex(double value, double min, double scale, int length) {
+        int index = (int) Math.floor((value - min) * scale);
+        if (index < 0) {
+            return 0;
+        }
+        if (index >= length) {
+            return length - 1;
+        }
+        return index;
+    }
+
+    private static double percentileFromHistogram(int[] histogram, long pixelCount,
+                                                  double min, double max, double percentile) {
+        long target = Math.max(0L, Math.min(pixelCount - 1L, Math.round((pixelCount - 1L) * percentile)));
+        long cumulative = 0L;
+        for (int i = 0; i < histogram.length; i++) {
+            cumulative += histogram[i];
+            if (cumulative > target) {
+                double fraction = (double) i / (histogram.length - 1);
+                return min + fraction * (max - min);
+            }
+        }
+        return max;
     }
 
     private static int clampToByte(double value) {
@@ -471,6 +614,40 @@ public final class DicomImageLoader {
 
         public boolean hasSpatialGeometry() {
             return Double.isFinite(sliceSortPositionMm);
+        }
+    }
+
+    public static final class IntensityWindow {
+        private final double low;
+        private final double high;
+
+        public IntensityWindow(double low, double high) {
+            this.low = low;
+            this.high = high;
+        }
+
+        public double getLow() {
+            return low;
+        }
+
+        public double getHigh() {
+            return high;
+        }
+
+        private boolean isValid() {
+            return Double.isFinite(low) && Double.isFinite(high) && high > low;
+        }
+    }
+
+    private static final class IntensityRange {
+        private final double min;
+        private final double max;
+        private final int pixelCount;
+
+        private IntensityRange(double min, double max, int pixelCount) {
+            this.min = min;
+            this.max = max;
+            this.pixelCount = pixelCount;
         }
     }
 
